@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Projekte · Christian</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f6f8;color:#1a1a2e;padding:20px}
+h1{font-size:22px;color:#002D69;margin-bottom:20px}
+h1 span{color:#007FA7;font-weight:400}
+.tabs{display:flex;gap:4px;margin-bottom:20px}
+.tab{padding:10px 20px;border-radius:8px 8px 0 0;cursor:pointer;font-size:14px;font-weight:600;background:#e5e7eb;color:#666;border:none}
+.tab.active{background:#fff;color:#002D69;box-shadow:0 -2px 4px rgba(0,0,0,.06)}
+.panel{display:none}
+.panel.active{display:block}
+
+/* Kanban */
+.kanban{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;min-height:60vh}
+.column{background:#e5e7eb;border-radius:10px;padding:12px;min-height:200px}
+.column h3{font-size:13px;color:#666;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #ddd}
+.card{background:#fff;border-radius:8px;padding:12px;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.08);cursor:pointer;transition:.2s;border-left:4px solid #999}
+.card:hover{box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.card.prio-hoch{border-left-color:#DD3221}
+.card.prio-mittel{border-left-color:#f59e0b}
+.card.prio-niedrig{border-left-color:#6b7280}
+.card-title{font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:4px}
+.card-body{font-size:11px;color:#666;line-height:1.3}
+.card-meta{font-size:10px;color:#999;margin-top:6px}
+
+/* Gantt */
+.gantt{overflow-x:auto}
+.gantt-table{width:100%;border-collapse:collapse;font-size:13px}
+.gantt-table th{background:#002D69;color:#fff;padding:8px 12px;text-align:left;font-size:12px;position:sticky;top:0}
+.gantt-table td{padding:10px 12px;border-bottom:1px solid #e5e7eb;vertical-align:middle}
+.gantt-bar{display:block;height:24px;border-radius:4px;color:#fff;font-size:11px;font-weight:600;line-height:24px;padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:20px}
+
+/* Modal */
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center}
+.modal-content{background:#fff;border-radius:12px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 4px 20px rgba(0,0,0,.2)}
+.modal-close{float:right;font-size:24px;cursor:pointer;color:#999}
+.modal-close:hover{color:#333}
+.modal h2{color:#002D69;font-size:18px;margin-bottom:12px}
+.modal table{width:100%;font-size:13px}
+.modal td{padding:6px 0;border-bottom:1px solid #f0f0f0;vertical-align:top}
+.modal .lbl{font-weight:600;color:#666;width:80px}
+
+@media(max-width:900px){.kanban{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){.kanban{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<h1>Projekte <span>· Christian Radden</span></h1>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('kanban')">📋 Kanban</button>
+  <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
+</div>
+
+<div id="panel-kanban" class="panel active">
+  <div class="kanban" id="kanban"></div>
+</div>
+
+<div id="panel-gantt" class="panel">
+  <div class="gantt">
+    <table class="gantt-table">
+      <thead><tr><th>Projekt</th><th>Priorität</th><th>Status</th><th>Start</th><th>Ende</th><th>Fortschritt</th></tr></thead>
+      <tbody id="ganttBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="modal" class="modal">
+  <div class="modal-content">
+    <span class="modal-close" onclick="closeModal()">&times;</span>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+/*__TASKS__*/null;
+/*__COMMENTS__*/null;
+/*__GANTT__*/null;
+
+const STATUS_NAMES = {
+  backlog: '📋 Backlog', ready: '🟡 Bereit', running: '🟢 In Arbeit',
+  completed: '✅ Erledigt', blocked: '🔴 Blockiert'
+};
+
+function renderKanban() {
+  const tasks = window.__TASKS || [];
+  const cols = ['backlog','ready','running','completed','blocked'];
+  const kanban = document.getElementById('kanban');
+  kanban.innerHTML = cols.map(col => {
+    const items = tasks.filter(t => t.status === col);
+    return `<div class="column"><h3>${STATUS_NAMES[col]||col} (${items.length})</h3>
+      ${items.map(t => `<div class="card prio-${t.priority}" onclick="showTask('${t.id}')">
+        <div class="card-title">${t.title}</div>
+        ${t.body ? `<div class="card-body">${t.body.substring(0,80)}${t.body.length>80?'…':''}</div>` : ''}
+        <div class="card-meta">${t.priority} · ${t.assignee||'niemand'}</div>
+      </div>`).join('')}
+    </div>`;
+  }).join('');
+}
+
+function renderGantt() {
+  const gantt = window.__GANTT || [];
+  const colors = {hoch:'#DD3221',mittel:'#f59e0b',niedrig:'#6b7280'};
+  const gb = document.getElementById('ganttBody');
+  gb.innerHTML = gantt.map(t => {
+    const barColor = colors[t.priority] || '#999';
+    return `<tr>
+      <td><strong>${t.title}</strong></td>
+      <td><span style="color:${barColor};font-weight:600">${t.priority}</span></td>
+      <td>${STATUS_NAMES[t.status]||t.status}</td>
+      <td>${t.start||'—'}</td>
+      <td>${t.end||'—'}</td>
+      <td><span class="gantt-bar" style="width:${t.status==='completed'?'100':t.status==='running'?'50':t.status==='ready'?'10':'5' }%;background:${barColor}">${t.status==='completed'?'✅ Fertig':t.status==='running'?'▶ Läuft':''}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+function showTask(id) {
+  const tasks = window.__TASKS || [];
+  const comments = window.__COMMENTS || [];
+  const t = tasks.find(x => x.id === id);
+  if (!t) return;
+  let html = `<table>
+    <tr><td class="lbl">Titel</td><td><strong>${t.title}</strong></td></tr>
+    <tr><td class="lbl">Status</td><td>${STATUS_NAMES[t.status]||t.status}</td></tr>
+    <tr><td class="lbl">Priorität</td><td><span style="color:${t.priority==='hoch'?'#DD3221':t.priority==='mittel'?'#f59e0b':'#6b7280'};font-weight:600">${t.priority}</span></td></tr>
+    ${t.assignee ? `<tr><td class="lbl">Wer</td><td>${t.assignee}</td></tr>` : ''}
+    ${t.body ? `<tr><td class="lbl">Beschreibung</td><td>${t.body}</td></tr>` : ''}
+    ${t.start_date ? `<tr><td class="lbl">Start</td><td>${t.start_date}</td></tr>` : ''}
+    ${t.due_date ? `<tr><td class="lbl">Ende</td><td>${t.due_date}</td></tr>` : ''}
+    <tr><td class="lbl">Erstellt</td><td>${t.created_at||'—'}</td></tr>
+  </table>`;
+  // Comments
+  const tc = comments.filter(c => c.task_id === id);
+  if (tc.length) {
+    html += '<h3 style="margin-top:16px;font-size:14px">Kommentare</h3>';
+    tc.forEach(c => {
+      html += `<div style="padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:12px">
+        <strong>${c.author||'System'}</strong> <span style="color:#999">${c.created_at||''}</span><br>${c.body}</div>`;
+    });
+  }
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('modal').style.display = 'flex';
+}
+
+function closeModal() { document.getElementById('modal').style.display = 'none'; }
+window.onclick = function(e) { if (e.target === document.getElementById('modal')) closeModal(); };
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelector(`.tab[onclick*="${name}"]`).classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+}
+
+window.__TASKS = /*__TASKS__*/null;
+window.__COMMENTS = /*__COMMENTS__*/null;
+window.__GANTT = /*__GANTT__*/null;
+
+renderKanban();
+renderGantt();
+</script>
+</body>
+</html>

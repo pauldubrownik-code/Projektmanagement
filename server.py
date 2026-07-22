@@ -1069,7 +1069,7 @@ function renderOverview() {
     const pctDone = tasks.filter(t => t.status==='completed').length / count * 100;
     html += '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
       + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-      + '<h3 style="font-size:15px;color:#002D69;font-weight:600">📁 '+escHtml(p)+'</h3>'
+      + '<h3 style="font-size:15px;color:#002D69;font-weight:600;cursor:pointer" onclick="filterProject(\''+escHtml(p)+'\')">📁 '+escHtml(p)+'</h3>'
       + '<span style="font-size:12px;color:#888;font-weight:500">'+count+' Aufgaben</span></div>'
       + '<div style="height:6px;background:#e5e7eb;border-radius:3px;margin-bottom:10px;overflow:hidden">'
       + '<div style="height:100%;width:'+Math.round(pctDone)+'%;background:#059669;border-radius:3px;transition:width .5s"></div></div>'
@@ -1164,6 +1164,13 @@ function renderOverview() {
   wrap.innerHTML = html;
 }
 function _fmtM(m) { if (!m||m<=0)return'0min'; if(m>=60)return Math.floor(m/60)+'h '+(m%60?m%60+'min':''); return m+'min'; }
+
+// ── Jump to Kanban with project filter ──
+function filterProject(name) {
+  document.getElementById('projectFilter').value = name;
+  switchTab('kanban');
+  renderKanban();
+}
 
 // ── Calendar View ──
 let calOffset = 0;

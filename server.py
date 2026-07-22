@@ -1376,9 +1376,23 @@ function renderCalDay(wrap) {
     });
     h += '</div>';
   }
-  h += '</div>';
+  h += '</div>'; // close else
+  // Routines section
+  if (routines.length) {
+    h += '<h3 style="font-size:14px;color:#002D69;margin:16px 0 8px">🔄 Routinen</h3>'
+      + '<div style="display:flex;flex-direction:column;gap:6px">';
+    routines.forEach(r => {
+      if (r.freq !== 'daily') return;
+      h += '<div class="cal-day-routine" data-rid="'+r.id+'" style="border-left:4px solid '+(r.done_today?'#059669':'#e5e7eb')+';background:#fff;border-radius:6px;padding:10px 12px;cursor:pointer;display:flex;align-items:center;gap:10px;box-shadow:0 1px 2px rgba(0,0,0,.06)">'
+        + '<div style="width:24px;height:24px;border-radius:50%;background:'+(r.done_today?'#059669':'#e5e7eb')+';color:'+(r.done_today?'#fff':'#999')+';display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0">'+(r.done_today?'✓':'')+'</div>'
+        + '<div style="font-size:12px;color:'+(r.done_today?'#999':'#1a1a2e')+';'+(r.done_today?'text-decoration:line-through':'')+'">'+escHtml(r.name)+'</div>'
+        + '</div>';
+    });
+    h += '</div>';
+  }
+  h += '</div>'; // close day container
   wrap.innerHTML = h;
-  // Attach click handlers directly
+  // Attach click handlers
   wrap.querySelectorAll('.cal-day-card').forEach(el => {
     el.addEventListener('click', function() { editTask(this.dataset.id); });
   });

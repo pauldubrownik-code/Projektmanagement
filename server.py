@@ -729,8 +729,11 @@ function openCreateModal() {
       </div>
     </div>
     <label>📁 Projekt</label>
-    <input type="text" id="fProject" list="projectFilterList" placeholder="z.B. Jessi, NGD, EnnAIgram">
-    <datalist id="projectFilterList"></datalist>
+    <select id="fProject" onchange="if(this.value==='__new__'){this.style.display='none';document.getElementById('fProjectNew').style.display='block';document.getElementById('fProjectNew').focus()}">
+      <option value="">— Keins —</option>
+      <option value="__new__">➕ Neu …</option>
+    </select>
+    <input type="text" id="fProjectNew" style="display:none" placeholder="Neues Projekt …">
     <label>Status</label>
     <select id="fStatus">
       <option value="backlog">📋 Backlog</option>
@@ -742,10 +745,16 @@ function openCreateModal() {
       <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
       <button class="btn btn-primary" onclick="createTask()">Erstellen</button>
     </div>`;
-  // Populate project datalist
+  // Populate project select
   const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
-  const dl = document.getElementById('projectFilterList');
-  if (dl) dl.innerHTML = projs.map(p => `<option value="${escHtml(p)}">`).join('');
+  const projSel = document.getElementById('fProject');
+  if (projSel) {
+    const cur = projSel.value;
+    projSel.innerHTML = '<option value="">— Keins —</option>'
+      + projs.map(p => '<option value="'+escHtml(p)+'">'+escHtml(p)+'</option>').join('')
+      + '<option value="__new__">➕ Neu …</option>';
+    projSel.value = cur;
+  }
   document.getElementById('modalOverlay').classList.add('show');
   setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
 }
@@ -753,11 +762,15 @@ function openCreateModal() {
 async function createTask() {
   const title = document.getElementById('fTitle').value.trim();
   if (!title) { alert('Titel ist Pflicht!'); return; }
+  const projSel = document.getElementById('fProject');
+  const projNew = document.getElementById('fProjectNew');
+  const project = projNew.style.display !== 'none' && projNew.value.trim()
+    ? projNew.value.trim() : projSel.value;
   await api('/api/tasks', {method:'POST', body:JSON.stringify({
     title,
     body: document.getElementById('fBody').value.trim(),
     priority: document.getElementById('fPrio').value,
-    project: document.getElementById('fProject').value.trim(),
+    project,
     status: document.getElementById('fStatus').value,
     start_date: document.getElementById('fStart').value,
     due_date: document.getElementById('fDue').value,
@@ -800,8 +813,11 @@ async function editTask(id) {
       </div>
     </div>
     <label>📁 Projekt</label>
-    <input type="text" id="fProject" list="projectFilterList" value="${escHtml(t.project_id||'')}" placeholder="z.B. Jessi, NGD, EnnAIgram">
-    <datalist id="projectFilterList"></datalist>
+    <select id="fProject" onchange="if(this.value==='__new__'){this.style.display='none';document.getElementById('fProjectNew').style.display='block';document.getElementById('fProjectNew').focus()}">
+      <option value="">— Keins —</option>
+      <option value="__new__">➕ Neu …</option>
+    </select>
+    <input type="text" id="fProjectNew" style="display:none" placeholder="Neues Projekt …">
     <div class="row2">
       <div><label>Status</label>
         <select id="fStatus" onchange="changeStatus('${t.id}',this.value)">
@@ -817,20 +833,29 @@ async function editTask(id) {
       <button class="btn btn-danger" onclick="deleteTask('${t.id}')">🗑 Löschen</button>
       <button class="btn btn-primary" onclick="saveTask('${t.id}')">Speichern</button>
     </div>`;
-  // Populate project datalist
+  // Populate project select and set current value
   const projs2 = [...new Set(allTasks.map(x => x.project_id).filter(Boolean))].sort();
-  const dl2 = document.getElementById('projectFilterList');
-  if (dl2) dl2.innerHTML = projs2.map(p => `<option value="${escHtml(p)}">`).join('');
+  const projSel2 = document.getElementById('fProject');
+  if (projSel2) {
+    projSel2.innerHTML = '<option value="">— Keins —</option>'
+      + projs2.map(p => '<option value="'+escHtml(p)+'">'+escHtml(p)+'</option>').join('')
+      + '<option value="__new__">➕ Neu …</option>';
+    projSel2.value = t.project_id || '';
+  }
   document.getElementById('modalOverlay').classList.add('show');
   setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
 }
 
 async function saveTask(id) {
+  const projSel = document.getElementById('fProject');
+  const projNew = document.getElementById('fProjectNew');
+  const project = projNew && projNew.style.display !== 'none' && projNew.value.trim()
+    ? projNew.value.trim() : (projSel ? projSel.value : '');
   await api('/api/tasks/'+id, {method:'PUT', body:JSON.stringify({
     title: document.getElementById('fTitle').value.trim(),
     body: document.getElementById('fBody').value.trim(),
     priority: document.getElementById('fPrio').value,
-    project: document.getElementById('fProject').value.trim(),
+    project,
     start_date: document.getElementById('fStart').value,
     due_date: document.getElementById('fDue').value,
     estimated_minutes: parseInt(document.getElementById('fEst').value) || 0,

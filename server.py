@@ -507,7 +507,6 @@ h1 span{color:#007FA7;font-weight:400}
   <button class="tab" onclick="switchTab('kanban')">📋 Kanban</button>
   <button class="tab" onclick="switchTab('calendar')">📅 Kalender</button>
   <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
-  <button class="tab" onclick="switchTab('routines')">🔄 Routinen</button>
 </div>
 
 <div id="panel-kanban" class="panel">
@@ -531,18 +530,12 @@ h1 span{color:#007FA7;font-weight:400}
   <div id="ganttWrap" class="gantt"><div class="loading"><span class="spinner"></span>Lade …</div></div>
 </div>
 
-<div id="panel-routines" class="panel">
-  <div class="toolbar">
-    <button class="btn btn-ghost" onclick="loadRoutines()">🔄 Aktualisieren</button>
-  </div>
-  <div id="routinesWrap"><div class="loading"><span class="spinner"></span>Lade …</div></div>
-</div>
-
 <div id="panel-overview" class="panel active">
   <div class="toolbar">
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
   <div id="overviewWrap"><div class="loading"><span class="spinner"></span>Lade …</div></div>
+  <div id="routinesOverview"></div>
 </div>
 
 <div id="panel-calendar" class="panel">
@@ -627,8 +620,12 @@ async function api(path, opts={}) {
 async function loadTasks() {
   document.getElementById('statusLine').textContent = 'Lade …';
   try {
-    const td = await api('/api/tasks');
+    const [td, rd] = await Promise.all([
+      api('/api/tasks'),
+      api('/api/routines')
+    ]);
     allTasks = td.tasks || [];
+    routines = rd.routines || [];
     document.getElementById('statusLine').textContent =
       allTasks.length + ' Aufgaben · ' + new Date().toLocaleTimeString('de-DE');
 
@@ -996,6 +993,31 @@ function renderGantt() {
   </div>`;
   html += '</div>';
   wrap.innerHTML = html;
+
+  // --- Routinen Section ---
+  const rWrap = document.getElementById('routinesOverview');
+  if (rWrap) {
+    if (!routines.length) {
+      rWrap.innerHTML = '<div style="text-align:center;color:#aaa;padding:20px;font-size:13px">Keine Routinen angelegt</div>';
+    } else {
+      const cats = [...new Set(routines.map(r => r.category).filter(Boolean))];
+      let rh = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">';
+      routines.forEach(r => {
+        const freqLabels = {'daily':'täglich','weekly':'wöchentlich','biweekly':'14-tägig','monthly':'monatlich'};
+        const done = r.done_today;
+        rh += '<div style="background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;align-items:center;gap:10px;cursor:pointer;border-left:4px solid '+(done?'#059669':'#e5e7eb')+'" onclick="toggleRoutine('+r.id+')">'
+          + '<div style="width:28px;height:28px;border-radius:50%;background:'+(done?'#059669':'#e5e7eb')+';color:'+(done?'#fff':'#999')+';display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">'+(done?'✓':'')+'</div>'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="font-size:12px;font-weight:600;color:'+(done?'#999':'#1a1a2e')+'">'+escHtml(r.name)+'</div>'
+          + '<div style="font-size:10px;color:#888">'+escHtml(freqLabels[r.freq]||r.freq)+(r.days?' · '+r.days:'')+'</div>'
+          + '</div>'
+          + (r.last_done ? '<div style="font-size:9px;color:#999;flex-shrink:0">'+new Date(r.last_done*1000).toLocaleDateString('de-DE',{weekday:'short',day:'2-digit'})+'</div>' : '')
+          + '</div>';
+      });
+      rh += '</div>';
+      rWrap.innerHTML = '<div style="margin-top:16px"><h3 style="font-size:14px;color:#002D69;margin-bottom:8px">🔄 Tägliche Routinen</h3>'+rh+'</div>';
+    }
+  }
 }
 
 // ── Pomodoro ──
@@ -1241,47 +1263,9 @@ function filterProject(name) {
 
 // ── Routinen ──
 let routines = [];
-async function loadRoutines() {
-  try {
-    const d = await api('/api/routines');
-    routines = d.routines || [];
-    renderRoutines();
-  } catch(e) { console.error(e); }
-}
-function renderRoutines() {
-  const wrap = document.getElementById('routinesWrap');
-  if (!routines.length) {
-    wrap.innerHTML = '<div class="empty-state">Keine Routinen angelegt</div>';
-    return;
-  }
-  const cats = [...new Set(routines.map(r => r.category).filter(Boolean))];
-  let html = '';
-  cats.forEach(cat => {
-    const items = routines.filter(r => r.category === cat);
-    html += '<div style="margin-bottom:16px">'
-      + '<h3 style="font-size:14px;color:#002D69;margin-bottom:8px">'+escHtml(cat)+'</h3>'
-      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">';
-    items.forEach(r => {
-      const freqLabels = {'daily':'täglich','weekly':'wöchentlich','biweekly':'14-tägig','monthly':'monatlich'};
-      const freqColor = r.done_today ? '#059669' : (r.freq==='daily' ? '#DD3221' : '#f59e0b');
-      html += '<div style="background:#fff;border-radius:8px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;align-items:center;gap:12px;cursor:pointer;border-left:4px solid '+(r.done_today?'#059669':'#e5e7eb')+'" onclick="toggleRoutine('+r.id+')">'
-        + '<div style="width:32px;height:32px;border-radius:50%;background:'+(r.done_today?'#059669':'#e5e7eb')+';color:'+(r.done_today?'#fff':'#999')+';display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">'+(r.done_today?'✅':'')+'</div>'
-        + '<div style="flex:1">'
-        + '<div style="font-size:13px;font-weight:600;color:'+(r.done_today?'#999':'#1a1a2e')+'">'+escHtml(r.name)+'</div>'
-        + '<div style="font-size:10px;color:#888;margin-top:2px">'+escHtml(freqLabels[r.freq]||r.freq)+(r.days?' · '+r.days:'')+'</div>'
-        + (r.notes ? '<div style="font-size:10px;color:#aaa;margin-top:1px">'+escHtml(r.notes).substring(0,60)+'</div>' : '')
-        + '</div>'
-        + '<div style="text-align:right;font-size:10px;color:#999;flex-shrink:0">'
-        + (r.last_done ? '<div>'+new Date(r.last_done*1000).toLocaleDateString('de-DE')+'</div>' : '')
-        + '</div></div>';
-    });
-    html += '</div></div>';
-  });
-  wrap.innerHTML = html;
-}
 async function toggleRoutine(id) {
   await api('/api/routines/'+id+'/toggle', {method:'POST'});
-  await loadRoutines();
+  await loadTasks();
 }
 
 // ── Calendar View ──
@@ -1374,23 +1358,33 @@ function renderCalDay(wrap) {
   if (!tasks.length) {
     h += '<div class="empty-state">Keine Aufgaben an diesem Tag</div>';
   } else {
+    h += '<div style="display:flex;flex-direction:column;gap:6px">';
     tasks.sort((a,b) => (a.priority||2)-(b.priority||2));
     tasks.forEach(t => {
       const prio = PRIO_LABEL(t.priority);
       const done = t.status === 'completed';
-      h += '<div style="border-left:4px solid '+(colors[prio]||'#999')+';background:'+(done?'#f9f9f9':'#fff')+';border-radius:6px;padding:12px;margin-bottom:8px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08)" onclick="editTask(\''+t.id+'\')">'
-        + '<div style="font-size:14px;font-weight:600;color:'+(done?'#999':'#1a1a2e')+';'+(done?'text-decoration:line-through':'')+'">'+escHtml(t.title)+'</div>'
-        + (t.body ? '<div style="font-size:12px;color:#666;margin-top:4px;'+(done?'text-decoration:line-through':'')+'">'+escHtml(t.body).substring(0,120)+'</div>' : '')
-        + '<div style="font-size:11px;color:#999;margin-top:6px;display:flex;gap:8px">'
+      h += '<div class="cal-day-card" data-id="'+t.id+'" style="border-left:4px solid '+(colors[prio]||'#999')+';background:'+(done?'#f9f9f9':'#fff')+';border-radius:6px;padding:10px 12px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;align-items:center;gap:10px">'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:13px;font-weight:600;color:'+(done?'#999':'#1a1a2e')+';'+(done?'text-decoration:line-through':'')+'">'+escHtml(t.title)+'</div>'
+        + '<div style="font-size:10px;color:#888;margin-top:2px;display:flex;gap:8px">'
         + '<span style="color:'+(colors[prio]||'#999')+';font-weight:600">'+prio+'</span>'
         + (t.project_id ? '<span>📁 '+escHtml(t.project_id)+'</span>' : '')
         + '<span>'+COL_NAMES[t.status]||t.status+'</span>'
         + (t.estimated_minutes ? '<span>🕐 '+_fmtM(t.estimated_minutes)+'</span>' : '')
-        + '</div></div>';
+        + '</div></div>'
+        + '</div>';
     });
+    h += '</div>';
   }
   h += '</div>';
   wrap.innerHTML = h;
+  // Attach click handlers directly
+  wrap.querySelectorAll('.cal-day-card').forEach(el => {
+    el.addEventListener('click', function() { editTask(this.dataset.id); });
+  });
+  wrap.querySelectorAll('.cal-day-routine').forEach(el => {
+    el.addEventListener('click', function() { toggleRoutine(parseInt(this.dataset.rid)); });
+  });
 }
 
 function renderCalMonth(wrap) {
@@ -1489,7 +1483,6 @@ function switchTab(name) {
   if (name === 'gantt') renderGantt();
   if (name === 'overview') renderOverview();
   if (name === 'calendar') renderCalendar();
-  if (name === 'routines') renderRoutines();
 }
 
 // Restore title when timer done
@@ -1501,7 +1494,6 @@ setInterval(() => {
 
 // ── Init ──
 loadTasks();
-loadRoutines();
 </script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interaktives Kanban + Gantt + Brainstorming — API-Server + Frontend.
+"""Interaktives Kanban + Gantt + Brainstorming + Pomodoro — API-Server + Frontend.
 
 Start:  python3 server.py
 Dann:   http://localhost:8089
@@ -23,8 +23,6 @@ PRIO_VALUES = {"hoch": 1, "mittel": 2, "niedrig": 3}
 STATUS_ORDER = ["backlog", "ready", "running", "completed", "blocked"]
 
 
-# ─── DB ───────────────────────────────────────────────────────────────────────
-
 def get_db():
     con = sqlite3.connect(str(KANBAN_DB))
     con.row_factory = sqlite3.Row
@@ -32,8 +30,7 @@ def get_db():
     return con
 
 
-def ensure_brainstorm_table():
-    """Create brainstorming table if not exists."""
+def ensure_tables():
     con = get_db()
     con.execute("""
         CREATE TABLE IF NOT EXISTS brainstorm (
@@ -44,11 +41,19 @@ def ensure_brainstorm_table():
             created_at INTEGER NOT NULL
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS task_estimates (
+            task_id TEXT PRIMARY KEY,
+            estimated_minutes INTEGER DEFAULT 0,
+            buffer_percent INTEGER DEFAULT 20,
+            notes TEXT DEFAULT ''
+        )
+    """)
     con.commit()
     con.close()
 
 
-ensure_brainstorm_table()
+ensure_tables()
 
 
 def fetch_tasks():
@@ -57,8 +62,16 @@ def fetch_tasks():
         "SELECT id, title, body, status, priority, created_at, started_at, "
         "completed_at, assignee FROM tasks ORDER BY priority, created_at"
     ).fetchall()
+    tasks = [dict(r) for r in rows]
+    # Add estimates
+    est_rows = con.execute("SELECT * FROM task_estimates").fetchall()
+    estimates = {r["task_id"]: dict(r) for r in est_rows}
     con.close()
-    return [dict(r) for r in rows]
+    for t in tasks:
+        e = estimates.get(t["id"], {})
+        t["estimated_minutes"] = e.get("estimated_minutes", 0)
+        t["buffer_percent"] = e.get("buffer_percent", 20)
+    return tasks
 
 
 def fetch_brainstorms():
@@ -71,7 +84,6 @@ def fetch_brainstorms():
 
 
 def ts_to_date(ts):
-    """Unix timestamp → YYYY-MM-DD string or empty."""
     if not ts:
         return ""
     try:
@@ -81,7 +93,6 @@ def ts_to_date(ts):
 
 
 def date_to_ts(date_str):
-    """YYYY-MM-DD → unix timestamp or None."""
     if not date_str or not date_str.strip():
         return None
     try:
@@ -89,8 +100,6 @@ def date_to_ts(date_str):
     except ValueError:
         return None
 
-
-# ─── API Handler ──────────────────────────────────────────────────────────────
 
 class KanbanHandler(SimpleHTTPRequestHandler):
 
@@ -112,6 +121,12 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 ).fetchone()
                 con.close()
                 t = dict(row) if row else {"error": "not found"}
+                if row:
+                    con = get_db()
+                    est = con.execute("SELECT * FROM task_estimates WHERE task_id=?", (task_id,)).fetchone()
+                    con.close()
+                    t["estimated_minutes"] = est["estimated_minutes"] if est else 0
+                    t["buffer_percent"] = est["buffer_percent"] if est else 20
                 self.send_json(t, 200 if row else 404)
             else:
                 self.send_json({"error": "missing id"}, 400)
@@ -131,6 +146,8 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 status = "ready"
             start_ts = date_to_ts(body.get("start_date"))
             due_ts = date_to_ts(body.get("due_date"))
+            est_min = int(body.get("estimated_minutes", 0))
+            buf_pct = int(body.get("buffer_percent", 20))
 
             task_id = f"t_{uuid.uuid4().hex[:8]}"
             now = int(time.time())
@@ -139,6 +156,10 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 "INSERT INTO tasks (id, title, body, status, priority, created_at, assignee, started_at, completed_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (task_id, title, desc, status, prio, now, "user", start_ts or None, due_ts or None),
+            )
+            con.execute(
+                "INSERT OR REPLACE INTO task_estimates (task_id, estimated_minutes, buffer_percent) VALUES (?, ?, ?)",
+                (task_id, est_min, buf_pct),
             )
             con.commit()
             con.close()
@@ -152,10 +173,8 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 return
             now = int(time.time())
             con = get_db()
-            con.execute(
-                "INSERT INTO brainstorm (content, project, processed, created_at) VALUES (?, ?, 0, ?)",
-                (content, project, now),
-            )
+            con.execute("INSERT INTO brainstorm (content, project, processed, created_at) VALUES (?, ?, 0, ?)",
+                        (content, project, now))
             con.commit()
             con.close()
             self.send_json({"ok": True})
@@ -177,7 +196,6 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             con.commit()
             con.close()
             self.send_json({"ok": True})
-
         else:
             self.send_json({"error": "not found"}, 404)
 
@@ -199,6 +217,8 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             prio_str = body.get("priority", "")
             start_str = body.get("start_date", "")
             due_str = body.get("due_date", "")
+            est_min = body.get("estimated_minutes")
+            buf_pct = body.get("buffer_percent")
 
             if title:
                 updates.append("title=?")
@@ -220,15 +240,28 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 updates.append("completed_at=?")
                 params.append(due_ts)
 
-            if not updates:
-                self.send_json({"ok": True})
-                return
+            if updates:
+                params.append(task_id)
+                con = get_db()
+                con.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id=?", params)
+                con.commit()
+                con.close()
 
-            params.append(task_id)
-            con = get_db()
-            con.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id=?", params)
-            con.commit()
-            con.close()
+            # Update estimates
+            if est_min is not None or buf_pct is not None:
+                con = get_db()
+                current = con.execute("SELECT * FROM task_estimates WHERE task_id=?", (task_id,)).fetchone()
+                if current:
+                    e_min = est_min if est_min is not None else current["estimated_minutes"]
+                    b_pct = buf_pct if buf_pct is not None else current["buffer_percent"]
+                    con.execute("UPDATE task_estimates SET estimated_minutes=?, buffer_percent=? WHERE task_id=?",
+                                (e_min, b_pct, task_id))
+                else:
+                    con.execute("INSERT INTO task_estimates (task_id, estimated_minutes, buffer_percent) VALUES (?, ?, ?)",
+                                (task_id, est_min or 0, buf_pct or 20))
+                con.commit()
+                con.close()
+
             self.send_json({"ok": True})
         else:
             self.send_json({"error": "not found"}, 404)
@@ -242,6 +275,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 return
             con = get_db()
             con.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+            con.execute("DELETE FROM task_estimates WHERE task_id=?", (task_id,))
             con.commit()
             con.close()
             self.send_json({"ok": True})
@@ -261,8 +295,6 @@ class KanbanHandler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
-
-    # ── helpers ──
 
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -289,8 +321,6 @@ class KanbanHandler(SimpleHTTPRequestHandler):
         pass
 
 
-# ─── Frontend (embedded) ──────────────────────────────────────────────────────
-
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="de">
 <head>
@@ -310,7 +340,7 @@ h1 span{color:#007FA7;font-weight:400}
 .panel{display:none}
 .panel.active{display:block}
 .toolbar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
-.btn{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:.2s;display:inline-flex;align-items:center;gap:4px}
+.btn{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:.2s;display:inline-flex;align-items:center;gap:4px;font-family:inherit}
 .btn-primary{background:#002D69;color:#fff}
 .btn-primary:hover{background:#003d8f}
 .btn-sm{padding:4px 10px;font-size:12px}
@@ -320,6 +350,8 @@ h1 span{color:#007FA7;font-weight:400}
 .btn-ghost:hover{background:#e5e7eb;color:#333}
 .btn-success{background:#059669;color:#fff}
 .btn-success:hover{background:#047857}
+.btn-pomo{background:#7C3AED;color:#fff}
+.btn-pomo:hover{background:#6D28D9}
 
 /* Kanban */
 .kanban{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;min-height:60vh}
@@ -337,6 +369,7 @@ h1 span{color:#007FA7;font-weight:400}
 .card-body{font-size:11px;color:#666;line-height:1.3;margin-top:4px}
 .card-meta{font-size:10px;color:#999;margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
 .card-dates{font-size:9px;color:#aaa;margin-top:4px;display:flex;gap:6px}
+.card-est{font-size:9px;color:#7C3AED;margin-top:2px;font-weight:500}
 .card-actions{position:absolute;top:6px;right:6px;display:flex;gap:2px}
 .card-actions button{background:none;border:none;cursor:pointer;font-size:14px;color:#999;padding:2px 4px;border-radius:4px;transition:.2s}
 .card-actions button:hover{background:#f0f0f0;color:#333}
@@ -345,20 +378,21 @@ h1 span{color:#007FA7;font-weight:400}
 /* Modal */
 .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center;padding:20px}
 .modal-overlay.show{display:flex}
-.modal{background:#fff;border-radius:12px;padding:24px;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,.2);animation:fadeIn .2s}
+.modal{background:#fff;border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,.2);animation:fadeIn .2s}
 @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 .modal-close{float:right;font-size:22px;cursor:pointer;color:#999;line-height:1}
 .modal-close:hover{color:#333}
 .modal h2{color:#002D69;font-size:18px;margin-bottom:16px;padding-right:30px}
 .modal label{display:block;font-size:12px;font-weight:600;color:#666;margin-bottom:4px;margin-top:12px}
-.modal input[type=text],.modal input[type=date],.modal textarea,.modal select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit}
+.modal input[type=text],.modal input[type=date],.modal input[type=number],.modal textarea,.modal select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit}
 .modal textarea{min-height:80px;resize:vertical}
 .modal .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.modal .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
 .modal .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 
 /* Gantt */
 .gantt{overflow-x:auto;background:#fff;border-radius:10px;padding:16px}
-.gantt-table{width:100%;border-collapse:collapse;font-size:13px;min-width:700px}
+.gantt-table{width:100%;border-collapse:collapse;font-size:13px;min-width:750px}
 .gantt-table th{background:#002D69;color:#fff;padding:8px 12px;text-align:left;font-size:12px;position:sticky;top:0}
 .gantt-table td{padding:8px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
 .gantt-date{font-size:10px;color:#999;white-space:nowrap}
@@ -384,6 +418,23 @@ h1 span{color:#007FA7;font-weight:400}
 .bstorm-project{display:inline-block;background:#e5e7eb;border-radius:4px;padding:1px 6px;font-size:10px;color:#555}
 .bstorm-actions{display:flex;gap:4px;margin-top:4px}
 .bstorm-actions button{font-size:10px;padding:2px 8px}
+
+/* Pomodoro */
+.pomo-fab{position:fixed;bottom:24px;right:24px;width:56px;height:56px;border-radius:50%;background:#7C3AED;color:#fff;border:none;cursor:pointer;font-size:24px;box-shadow:0 4px 16px rgba(124,58,237,.4);z-index:900;transition:.2s}
+.pomo-fab:hover{transform:scale(1.1);background:#6D28D9}
+.pomo-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.85);z-index:9998;justify-content:center;align-items:center;flex-direction:column}
+.pomo-overlay.show{display:flex}
+.pomo-card{background:#fff;border-radius:20px;padding:40px;text-align:center;max-width:360px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.pomo-card .phase{font-size:14px;font-weight:600;color:#7C3AED;margin-bottom:8px}
+.pomo-card .timer{font-size:72px;font-weight:700;color:#1a1a2e;font-variant-numeric:tabular-nums;margin:16px 0}
+.pomo-card .timer.pause{color:#f59e0b}
+.pomo-card .timer.break{color:#059669}
+.pomo-card .pomo-btn-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.pomo-card .pomo-btn-row button{min-width:80px}
+.pomo-card .task-label{font-size:12px;color:#888;margin-top:12px;padding:8px;background:#f4f6f8;border-radius:8px}
+.pomo-card .close-pomo{position:absolute;top:12px;right:12px;font-size:24px;cursor:pointer;color:#999;background:none;border:none}
+.pomo-card-wrap{position:relative}
+.pomo-count{font-size:11px;color:#aaa;margin-top:8px}
 
 /* Misc */
 .empty-state{padding:40px 20px;text-align:center;color:#aaa;font-size:14px}
@@ -450,10 +501,45 @@ h1 span{color:#007FA7;font-weight:400}
   </div>
 </div>
 
+<!-- Pomodoro FAB -->
+<button class="pomo-fab" id="pomoFab" onclick="togglePomo()" title="Fokus-Modus (Pomodoro)">🍅</button>
+
+<!-- Pomodoro Overlay -->
+<div class="pomo-overlay" id="pomoOverlay">
+  <div class="pomo-card-wrap">
+    <div class="pomo-card">
+      <button class="close-pomo" onclick="togglePomo()">&times;</button>
+      <div class="phase" id="pomoPhase">🍅 Fokus</div>
+      <div class="timer" id="pomoTimer">25:00</div>
+      <div class="pomo-btn-row">
+        <button class="btn btn-pomo" id="pomoBtn" onclick="pomoStart()">▶ Start</button>
+        <button class="btn btn-ghost" onclick="pomoReset()">↺ Reset</button>
+      </div>
+      <div class="task-label" id="pomoTask">Keine Aufgabe ausgewählt</div>
+      <div class="pomo-count" id="pomoCount">🍅 0 Today</div>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── State ──
 let allTasks = [];
 let allBs = [];
+
+// ── Pomodoro State ──
+let pomoState = 'idle'; // idle | running | paused | break
+let pomoRemaining = 25 * 60;
+let pomoInterval = null;
+let pomoCountToday = parseInt(localStorage.getItem('pomoCount') || '0');
+let pomoDate = localStorage.getItem('pomoDate') || '';
+
+// Check date reset
+const today = new Date().toDateString();
+if (pomoDate !== today) {
+  pomoCountToday = 0;
+  localStorage.setItem('pomoDate', today);
+}
+localStorage.setItem('pomoCount', pomoCountToday);
 
 // ── API ──
 async function api(path, opts={}) {
@@ -504,6 +590,11 @@ function tsToDateInput(ts) {
   if (!ts) return '';
   try { return new Date(ts * 1000).toISOString().split('T')[0]; } catch(e) { return ''; }
 }
+function fmtMinutes(m) {
+  if (!m || m <= 0) return '';
+  if (m >= 60) return Math.floor(m/60)+'h '+ (m%60 ? m%60+'min' : '');
+  return m + 'min';
+}
 
 // ── Kanban ──
 const COLS = ['backlog','ready','running','completed','blocked'];
@@ -535,12 +626,17 @@ function renderCard(t) {
   const datesHtml = (startStr || dueStr)
     ? `<div class="card-dates">${startStr ? '📅 '+startStr : ''} ${dueStr ? '→ '+dueStr : ''}</div>`
     : '';
+  const estHtml = t.estimated_minutes > 0
+    ? `<div class="card-est">🕐 ${fmtMinutes(t.estimated_minutes)}${t.buffer_percent ? ' +'+t.buffer_percent+'% Puffer' : ''}</div>`
+    : '';
   return `<div class="card prio-${prio}" onclick="editTask('${t.id}')">
     <div class="card-actions" onclick="event.stopPropagation()">
+      <button onclick="event.stopPropagation();startPomoForTask('${t.id}')" title="Fokus">🍅</button>
       <button onclick="deleteTask('${t.id}')" title="Löschen">🗑</button>
     </div>
     <div class="card-title">${escHtml(t.title)}</div>
     ${bodyShort ? `<div class="card-body">${escHtml(bodyShort)}</div>` : ''}
+    ${estHtml}
     ${datesHtml}
     <div class="card-meta">
       <span style="color:${PRIO_C[prio]||'#999'};font-weight:600">${prio}</span>
@@ -574,7 +670,18 @@ function openCreateModal() {
       <div><label>Start</label><input type="date" id="fStart"></div>
       <div><label>Ziel</label><input type="date" id="fDue"></div>
     </div>
-    <div class="row2">
+    <div class="row3">
+      <div><label>⏱ Aufwand</label><input type="number" id="fEst" placeholder="Minuten" min="0" step="5"></div>
+      <div><label>📊 Puffer</label>
+        <select id="fBuf">
+          <option value="0">0%</option>
+          <option value="10">10%</option>
+          <option value="20" selected>20%</option>
+          <option value="30">30%</option>
+          <option value="50">50%</option>
+          <option value="100">100%</option>
+        </select>
+      </div>
       <div><label>Priorität</label>
         <select id="fPrio">
           <option value="hoch">🔴 Hoch</option>
@@ -582,15 +689,14 @@ function openCreateModal() {
           <option value="niedrig">🟢 Niedrig</option>
         </select>
       </div>
-      <div><label>Status</label>
-        <select id="fStatus">
-          <option value="backlog">📋 Backlog</option>
-          <option value="ready" selected>🟡 Bereit</option>
-          <option value="running">🟢 In Arbeit</option>
-          <option value="blocked">🔴 Blockiert</option>
-        </select>
-      </div>
     </div>
+    <label>Status</label>
+    <select id="fStatus">
+      <option value="backlog">📋 Backlog</option>
+      <option value="ready" selected>🟡 Bereit</option>
+      <option value="running">🟢 In Arbeit</option>
+      <option value="blocked">🔴 Blockiert</option>
+    </select>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
       <button class="btn btn-primary" onclick="createTask()">Erstellen</button>
@@ -609,6 +715,8 @@ async function createTask() {
     status: document.getElementById('fStatus').value,
     start_date: document.getElementById('fStart').value,
     due_date: document.getElementById('fDue').value,
+    estimated_minutes: parseInt(document.getElementById('fEst').value) || 0,
+    buffer_percent: parseInt(document.getElementById('fBuf').value) || 20,
   })});
   closeModal();
   await loadTasks();
@@ -629,7 +737,13 @@ async function editTask(id) {
       <div><label>Start</label><input type="date" id="fStart" value="${tsToDateInput(t.started_at)}"></div>
       <div><label>Ziel</label><input type="date" id="fDue" value="${tsToDateInput(t.completed_at)}"></div>
     </div>
-    <div class="row2">
+    <div class="row3">
+      <div><label>⏱ Aufwand</label><input type="number" id="fEst" value="${t.estimated_minutes||0}" min="0" step="5" placeholder="Minuten"></div>
+      <div><label>📊 Puffer</label>
+        <select id="fBuf">
+          ${[0,10,20,30,50,100].map(v => `<option value="${v}" ${(t.buffer_percent||20)==v?'selected':''}>${v}%</option>`).join('')}
+        </select>
+      </div>
       <div><label>Priorität</label>
         <select id="fPrio">
           <option value="hoch" ${prio==='hoch'?'selected':''}>🔴 Hoch</option>
@@ -637,10 +751,15 @@ async function editTask(id) {
           <option value="niedrig" ${prio==='niedrig'?'selected':''}>🟢 Niedrig</option>
         </select>
       </div>
+    </div>
+    <div class="row2">
       <div><label>Status</label>
         <select id="fStatus" onchange="changeStatus('${t.id}',this.value)">
           ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${COL_NAMES[s]}</option>`).join('')}
         </select>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:8px">
+        <button class="btn btn-pomo btn-sm" onclick="startPomoForTask('${t.id}')">🍅 Fokus</button>
       </div>
     </div>
     <div class="btn-row">
@@ -659,6 +778,8 @@ async function saveTask(id) {
     priority: document.getElementById('fPrio').value,
     start_date: document.getElementById('fStart').value,
     due_date: document.getElementById('fDue').value,
+    estimated_minutes: parseInt(document.getElementById('fEst').value) || 0,
+    buffer_percent: parseInt(document.getElementById('fBuf').value) || 20,
   })});
   closeModal();
   await loadTasks();
@@ -675,17 +796,14 @@ function renderGantt() {
     wrap.innerHTML = '<div class="empty-state">Keine Aufgaben vorhanden</div>';
     return;
   }
-
   const now = Date.now() / 1000;
   const day = 86400;
-
   const sorted = [...allTasks].sort((a,b) => {
     const pa = typeof a.priority === 'number' ? a.priority : ({hoch:1,mittel:2,niedrig:3}[a.priority]||2);
     const pb = typeof b.priority === 'number' ? b.priority : ({hoch:1,mittel:2,niedrig:3}[b.priority]||2);
     if (pa !== pb) return pa - pb;
     return (a.created_at||0) - (b.created_at||0);
   });
-
   const tasks = sorted.map(t => {
     const prioVal = typeof t.priority === 'number' ? t.priority : ({hoch:1,mittel:2,niedrig:3}[t.priority]||2);
     const start = t.started_at || t.created_at || now;
@@ -695,28 +813,26 @@ function renderGantt() {
     }
     return {...t, _start: start, _end: end};
   });
-
   const minT = Math.min(...tasks.map(t => t._start));
   const maxT = Math.max(...tasks.map(t => t._end), now + 7*day);
   const range = maxT - minT || day;
-
   function pct(val) { return Math.max(2, ((val - minT) / range) * 100); }
 
-  // Table
-  let html = '<table class="gantt-table"><thead><tr><th>Projekt</th><th>Prio</th><th>Status</th><th>Start</th><th>Ziel</th></tr></thead><tbody>';
+  let html = '<table class="gantt-table"><thead><tr><th>Projekt</th><th>Prio</th><th>Status</th><th>Aufwand</th><th>Start</th><th>Ziel</th></tr></thead><tbody>';
   tasks.forEach(t => {
     const prio = PRIO_LABEL(t.priority);
+    const estStr = t.estimated_minutes > 0 ? fmtMinutes(t.estimated_minutes) + (t.buffer_percent ? ' +'+t.buffer_percent+'%' : '') : '—';
     html += `<tr>
       <td><strong>${escHtml(t.title)}</strong></td>
       <td><span style="color:${PRIO_C[prio]};font-weight:600">${prio}</span></td>
       <td>${COL_NAMES[t.status]||t.status}</td>
+      <td style="color:#7C3AED;font-weight:500;font-size:12px">${estStr}</td>
       <td class="gantt-date">${t.started_at ? tsToDate(t.started_at) : (t.created_at ? tsToDate(t.created_at) : '—')}</td>
       <td class="gantt-date">${t.completed_at ? tsToDate(t.completed_at) : (t.status==='completed' ? '—' : 'offen')}</td>
     </tr>`;
   });
   html += '</tbody></table>';
 
-  // Timeline
   html += '<div class="gantt-timeline"><div class="tl-label">📈 Zeitverlauf</div>';
   tasks.forEach(t => {
     const prio = PRIO_LABEL(t.priority);
@@ -731,14 +847,11 @@ function renderGantt() {
       </div>
     </div>`;
   });
-
-  // Today marker
   const todayPct = pct(now);
   html += `<div style="position:relative;height:0;margin-top:-4px">
     <div style="position:absolute;left:${todayPct}%;top:0;width:2px;height:${tasks.length*28+12}px;background:#DD3221;z-index:2"></div>
     <div style="position:absolute;left:${todayPct}%;top:-2px;font-size:10px;color:#DD3221;font-weight:600;transform:translateX(-50%)">▼ Heute</div>
   </div>`;
-
   html += '</div>';
   wrap.innerHTML = html;
 }
@@ -760,11 +873,8 @@ function renderBrainstorm() {
     list.innerHTML = '<div class="empty-state">Noch keine Brainstorm-Einträge. Schreib oben deine Gedanken rein!</div>';
     return;
   }
-
-  // Update project datalist
   const projects = [...new Set(allBs.map(e => e.project).filter(Boolean))];
   document.getElementById('projectList').innerHTML = projects.map(p => `<option value="${escHtml(p)}">`).join('');
-
   list.innerHTML = allBs.map(e => {
     const date = e.created_at ? new Date(e.created_at * 1000).toLocaleString('de-DE') : '';
     return `<div class="bstorm-entry">
@@ -787,6 +897,112 @@ async function deleteBrainstorm(id) {
   await loadTasks();
 }
 
+// ── Pomodoro ──
+function togglePomo() {
+  const overlay = document.getElementById('pomoOverlay');
+  overlay.classList.toggle('show');
+  if (!overlay.classList.contains('show')){
+    pomoReset();
+  }
+}
+
+function startPomoForTask(taskId) {
+  const t = allTasks.find(x => x.id === taskId);
+  if (!t) return;
+  document.getElementById('pomoTask').textContent = '🍅 ' + t.title;
+  togglePomo();
+}
+
+function pomoStart() {
+  if (pomoState === 'idle' || pomoState === 'paused' || pomoState === 'break') {
+    if (pomoState === 'idle' || pomoState === 'break') {
+      pomoRemaining = pomoState === 'break' ? 5 * 60 : 25 * 60;
+      pomoState = pomoState === 'break' ? 'break' : 'running';
+    } else {
+      pomoState = 'running';
+    }
+    document.getElementById('pomoBtn').textContent = '⏸ Pause';
+    document.getElementById('pomoPhase').textContent = pomoState === 'break' ? '☕ Pause' : '🍅 Fokus';
+    document.getElementById('pomoTimer').className = 'timer' + (pomoState === 'break' ? ' break' : '');
+    if (pomoInterval) clearInterval(pomoInterval);
+    pomoInterval = setInterval(pomoTick, 1000);
+  } else if (pomoState === 'running') {
+    pomoState = 'paused';
+    document.getElementById('pomoBtn').textContent = '▶ Weiter';
+    document.getElementById('pomoPhase').textContent = '⏸ Pausiert';
+    document.getElementById('pomoTimer').className = 'timer pause';
+    if (pomoInterval) clearInterval(pomoInterval);
+  }
+}
+
+function pomoReset() {
+  if (pomoInterval) clearInterval(pomoInterval);
+  pomoInterval = null;
+  pomoState = 'idle';
+  pomoRemaining = 25 * 60;
+  document.getElementById('pomoTimer').textContent = '25:00';
+  document.getElementById('pomoTimer').className = 'timer';
+  document.getElementById('pomoBtn').textContent = '▶ Start';
+  document.getElementById('pomoPhase').textContent = '🍅 Fokus';
+  document.getElementById('pomoTask').textContent = 'Keine Aufgabe ausgewählt';
+  updatePomoCount();
+}
+
+function pomoTick() {
+  pomoRemaining--;
+  if (pomoRemaining <= 0) {
+    if (pomoState === 'running') {
+      // Session complete
+      pomoCountToday++;
+      localStorage.setItem('pomoCount', pomoCountToday);
+      localStorage.setItem('pomoDate', today);
+      updatePomoCount();
+      if (pomoInterval) clearInterval(pomoInterval);
+      pomoState = 'break';
+      pomoRemaining = 5 * 60;
+      document.getElementById('pomoPhase').textContent = '☕ Pause — gut gemacht!';
+      document.getElementById('pomoTimer').className = 'timer break';
+      document.getElementById('pomoBtn').textContent = '▶ Pause starten';
+      try {
+        if (Notification.permission === 'granted') {
+          new Notification('🍅 Pomodoro abgeschlossen!', {body: '5 Minuten Pause.'});
+        }
+      } catch(e) {}
+      return;
+    } else if (pomoState === 'break') {
+      if (pomoInterval) clearInterval(pomoInterval);
+      pomoState = 'idle';
+      pomoRemaining = 25 * 60;
+      document.getElementById('pomoPhase').textContent = '🍅 Bereit für nächste Runde!';
+      document.getElementById('pomoTimer').textContent = '25:00';
+      document.getElementById('pomoTimer').className = 'timer';
+      document.getElementById('pomoBtn').textContent = '▶ Start';
+      try {
+        if (Notification.permission === 'granted') {
+          new Notification('☕ Pause vorbei!', {body: 'Nächster Fokus-Durchgang.'});
+        }
+      } catch(e) {}
+      return;
+    }
+  }
+  const m = Math.floor(pomoRemaining / 60);
+  const s = pomoRemaining % 60;
+  document.getElementById('pomoTimer').textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  // Update browser title
+  document.title = '🍅 ' + document.getElementById('pomoTimer').textContent + ' · Projekte';
+}
+
+function updatePomoCount() {
+  document.getElementById('pomoCount').textContent = '🍅 ' + pomoCountToday + ' Today';
+}
+
+// Request notification permission on interaction
+document.addEventListener('click', () => {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}, {once: true});
+
 // ── Tabs ──
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -799,6 +1015,13 @@ function switchTab(name) {
   if (name === 'brainstorm') renderBrainstorm();
 }
 
+// Restore title when timer done
+setInterval(() => {
+  if (pomoState === 'idle' || pomoState === 'paused') {
+    document.title = 'Projekte · Christian Radden';
+  }
+}, 5000);
+
 // ── Init ──
 loadTasks();
 </script>
@@ -806,13 +1029,11 @@ loadTasks();
 </html>
 """
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     server = HTTPServer((HOST, PORT), KanbanHandler)
-    print(f"✅ Kanban + Gantt + Brainstorming: http://{HOST}:{PORT}")
-    print(f"   Dashboard:                      http://{HOST}:{PORT}/")
-    print(f"   API:                            http://{HOST}:{PORT}/api/tasks")
+    print(f"✅ Kanban + Gantt + Brainstorming + Pomodoro: http://{HOST}:{PORT}")
+    print(f"   Dashboard:                                 http://{HOST}:{PORT}/")
+    print(f"   API:                                       http://{HOST}:{PORT}/api/tasks")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

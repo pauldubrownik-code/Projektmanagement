@@ -484,11 +484,14 @@ h1 span{color:#007FA7;font-weight:400}
     <span id="calLabel" style="font-size:14px;font-weight:600;color:#002D69;min-width:240px;text-align:center"></span>
     <button class="btn btn-ghost" onclick="calNav(1)">▶</button>
     <button class="btn btn-ghost" onclick="calToday()">Heute</button>
+    <select id="calProjectFilter" onchange="renderCalendar()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="">📁 Alle Projekte</option>
+    </select>
     <button class="btn btn-ghost" onclick="loadTasks()">🔄</button>
     <span style="flex:1"></span>
-    <button class="btn btn-sm cal-vw" data-vw="week" style="background:#002D69;color:#fff">Woche</button>
-    <button class="btn btn-sm cal-vw" data-vw="month">Monat</button>
-    <button class="btn btn-sm cal-vw" data-vw="year">Jahr</button>
+    <button class="btn btn-sm cal-vw" data-vw="week" onclick="calSetView('week')" style="background:#002D69;color:#fff">Woche</button>
+    <button class="btn btn-sm cal-vw" data-vw="month" onclick="calSetView('month')">Monat</button>
+    <button class="btn btn-sm cal-vw" data-vw="year" onclick="calSetView('year')">Jahr</button>
   </div>
   <div id="calendarWrap" style="background:#fff;border-radius:10px;padding:16px;overflow-x:auto">
     <div class="loading"><span class="spinner"></span>Lade …</div>
@@ -572,6 +575,10 @@ async function loadTasks() {
     const ganttVal = ganttSel.value;
     ganttSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
     ganttSel.value = ganttVal;
+    const calSel = document.getElementById('calProjectFilter');
+    const calVal = calSel.value;
+    calSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
+    calSel.value = calVal;
 
     renderKanban();
     renderGantt();
@@ -1117,7 +1124,9 @@ function renderCalWeek(wrap) {
   const dayTs = days.map(d => Math.floor(d.getTime()/1000));
   const nextDayTs = days.map(d => Math.floor(new Date(d.getFullYear(),d.getMonth(),d.getDate()+1).getTime()/1000));
   const byDay = days.map(()=>[]);
-  allTasks.forEach(t => {
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  calTasks.forEach(t => {
     const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
     if (!s) return;
     for (let i=0;i<7;i++) if (s<nextDayTs[i]&&e>=dayTs[i]) byDay[i].push(t);
@@ -1160,6 +1169,8 @@ function renderCalMonth(wrap) {
   dayLabels.forEach(d => h += '<th style="padding:6px;font-size:11px;text-align:center;color:#666">'+d+'</th>');
   h += '</tr></thead><tbody>';
   const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
   const tNow = Math.floor(Date.now()/1000);
   let day = 1;
   for (let row = 0; row < 6; row++) {
@@ -1174,7 +1185,7 @@ function renderCalMonth(wrap) {
         h += '<div style="font-size:10px;font-weight:600;color:'+(isT?'#002D69':'#333')+';padding:1px 2px;margin-bottom:2px">'+cellDay+'</div>';
         const dayStart = Math.floor(d.getTime()/1000);
         const dayEnd = dayStart + 86400;
-        const tasks = allTasks.filter(t => {
+        const tasks = calTasks.filter(t => {
           const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
           return s && s < dayEnd && e >= dayStart;
         }).slice(0, 3);
@@ -1182,7 +1193,7 @@ function renderCalMonth(wrap) {
           const p = PRIO_LABEL(t.priority);
           h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:2px;padding:1px 2px;margin-bottom:1px;font-size:8px;cursor:pointer;overflow:hidden;white-space:nowrap" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title).substring(0,15)+'</div>';
         });
-        if (tasks.length > 3) h += '<div style="font-size:8px;color:#999">+'+ (allTasks.filter(t => {
+        if (tasks.length > 3) h += '<div style="font-size:8px;color:#999">+'+ (calTasks.filter(t => {
           const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
           return s && s < dayEnd && e >= dayStart;
         }).length - 3) +' mehr</div>';
@@ -1200,6 +1211,8 @@ function renderCalYear(wrap) {
   const year = now.getFullYear() + calOffset;
   document.getElementById('calLabel').textContent = 'Jahr ' + year;
   const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
   let h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
   for (let m = 0; m < 12; m++) {
     const first = new Date(year, m, 1);
@@ -1207,7 +1220,7 @@ function renderCalYear(wrap) {
     const mName = first.toLocaleDateString('de-DE', {month:'short'});
     const monthStart = Math.floor(first.getTime()/1000);
     const monthEnd = monthStart + lastD * 86400;
-    const tasks = allTasks.filter(t => {
+    const tasks = calTasks.filter(t => {
       const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
       return s && s < monthEnd && e >= monthStart;
     });

@@ -461,6 +461,7 @@ h1 span{color:#007FA7;font-weight:400}
   <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
   <button class="tab" onclick="switchTab('brainstorm')">💡 Brainstorming</button>
   <button class="tab" onclick="switchTab('overview')">📊 Übersicht</button>
+  <button class="tab" onclick="switchTab('calendar')">📅 Kalender</button>
 </div>
 
 <div id="panel-kanban" class="panel active">
@@ -509,6 +510,19 @@ h1 span{color:#007FA7;font-weight:400}
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
   <div id="overviewWrap"><div class="loading"><span class="spinner"></span>Lade …</div></div>
+</div>
+
+<div id="panel-calendar" class="panel">
+  <div class="toolbar">
+    <button class="btn btn-ghost" onclick="prevWeek()">◀</button>
+    <span id="calWeekLabel" style="font-size:14px;font-weight:600;color:#002D69;min-width:200px;text-align:center"></span>
+    <button class="btn btn-ghost" onclick="nextWeek()">▶</button>
+    <button class="btn btn-ghost" onclick="todayWeek()">Heute</button>
+    <button class="btn btn-ghost" onclick="loadTasks()">🔄</button>
+  </div>
+  <div id="calendarWrap" style="background:#fff;border-radius:10px;padding:16px;overflow-x:auto">
+    <div class="loading"><span class="spinner"></span>Lade …</div>
+  </div>
 </div>
 
 <!-- Modal -->
@@ -598,6 +612,7 @@ async function loadTasks() {
     renderGantt();
     renderBrainstorm();
     renderOverview();
+    renderCalendar();
   } catch(e) {
     document.getElementById('statusLine').textContent = '⚠️ Fehler beim Laden';
     console.error(e);
@@ -1141,6 +1156,81 @@ function renderOverview() {
 }
 function _fmtM(m) { if (!m||m<=0)return'0min'; if(m>=60)return Math.floor(m/60)+'h '+(m%60?m%60+'min':''); return m+'min'; }
 
+// ── Calendar View ──
+let calWeekOffset = 0;
+function getWeekStart(offset) {
+  const now = new Date();
+  const day = now.getDay();
+  const diff = now.getDate() - day + (day === 0 ? -6 : 1) + offset * 7;
+  const m = new Date(now.setDate(diff));
+  m.setHours(0,0,0,0);
+  return m;
+}
+function renderCalendar() {
+  const wrap = document.getElementById('calendarWrap');
+  const start = getWeekStart(calWeekOffset);
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    days.push(d);
+  }
+  const fmt = d => d.toLocaleDateString('de-DE', {weekday:'short', day:'2-digit', month:'2-digit'});
+  const isToday = d => {
+    const t = new Date();
+    return d.getFullYear()===t.getFullYear() && d.getMonth()===t.getMonth() && d.getDate()===t.getDate();
+  };
+  document.getElementById('calWeekLabel').textContent =
+    fmt(days[0]) + ' – ' + fmt(days[6]);
+
+  // Group tasks by day
+  const dayTs = days.map(d => Math.floor(d.getTime()/1000));
+  const nextDayTs = days.map(d => Math.floor(new Date(d.getFullYear(),d.getMonth(),d.getDate()+1).getTime()/1000));
+  const byDay = days.map(() => []);
+
+  allTasks.forEach(t => {
+    const startTs = t.started_at || t.created_at;
+    const endTs = t.completed_at || startTs + 86400*14;
+    if (!startTs) return;
+    for (let i = 0; i < days.length; i++) {
+      if (startTs < nextDayTs[i] && endTs >= dayTs[i]) {
+        byDay[i].push(t);
+      }
+    }
+  });
+
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  let html = '<table style="width:100%;border-collapse:collapse;table-layout:fixed;min-width:700px">'
+    + '<thead><tr>';
+  days.forEach((d,i) => {
+    const today = isToday(d) ? ' style="background:#002D69;color:#fff;border-radius:6px 6px 0 0"' : '';
+    html += '<th'+today+' style="padding:8px 6px;font-size:12px;text-align:center;font-weight:600">'+fmt(d)+'</th>';
+  });
+  html += '</tr></thead><tbody><tr>';
+  days.forEach((d,i) => {
+    const today = isToday(d) ? ' style="background:#f0f4ff"' : '';
+    html += '<td'+today+' style="vertical-align:top;padding:4px;border:1px solid #e5e7eb;height:120px;width:14.28%">';
+    if (byDay[i].length) {
+      byDay[i].forEach(t => {
+        const prio = PRIO_LABEL(t.priority);
+        html += '<div style="background:'+(colors[prio]||'#999')+';color:#fff;border-radius:4px;padding:2px 4px;margin-bottom:2px;font-size:10px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title)+'</div>';
+      });
+    }
+    html += '</td>';
+  });
+  html += '</tr></tbody></table>';
+  html += '<div style="margin-top:8px;font-size:11px;color:#888;display:flex;gap:12px;flex-wrap:wrap">';
+  Object.entries(colors).forEach(([p,c]) => {
+    const cnt = allTasks.filter(t => PRIO_LABEL(t.priority)===p).length;
+    html += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+c+';margin-right:4px;vertical-align:middle"></span>'+p+' ('+cnt+')</span>';
+  });
+  html += '</div>';
+  wrap.innerHTML = html;
+}
+function prevWeek() { calWeekOffset--; renderCalendar(); }
+function nextWeek() { calWeekOffset++; renderCalendar(); }
+function todayWeek() { calWeekOffset=0; renderCalendar(); }
+
 // ── Tabs ──
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1152,6 +1242,7 @@ function switchTab(name) {
   if (name === 'gantt') renderGantt();
   if (name === 'brainstorm') renderBrainstorm();
   if (name === 'overview') renderOverview();
+  if (name === 'calendar') renderCalendar();
 }
 
 // Restore title when timer done

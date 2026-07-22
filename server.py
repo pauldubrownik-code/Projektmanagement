@@ -60,7 +60,7 @@ def fetch_tasks():
     con = get_db()
     rows = con.execute(
         "SELECT id, title, body, status, priority, created_at, started_at, "
-        "completed_at, assignee FROM tasks ORDER BY priority, created_at"
+        "completed_at, assignee, project_id FROM tasks ORDER BY priority, created_at"
     ).fetchall()
     tasks = [dict(r) for r in rows]
     # Add estimates
@@ -117,7 +117,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 con = get_db()
                 row = con.execute(
                     "SELECT id, title, body, status, priority, created_at, started_at, "
-                    "completed_at, assignee FROM tasks WHERE id=?", (task_id,)
+                    "completed_at, assignee, project_id FROM tasks WHERE id=?", (task_id,)
                 ).fetchone()
                 con.close()
                 t = dict(row) if row else {"error": "not found"}
@@ -151,11 +151,12 @@ class KanbanHandler(SimpleHTTPRequestHandler):
 
             task_id = f"t_{uuid.uuid4().hex[:8]}"
             now = int(time.time())
+            project = body.get("project", "").strip()
             con = get_db()
             con.execute(
-                "INSERT INTO tasks (id, title, body, status, priority, created_at, assignee, started_at, completed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, title, desc, status, prio, now, "user", start_ts or None, due_ts or None),
+                "INSERT INTO tasks (id, title, body, status, priority, created_at, assignee, started_at, completed_at, project_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, title, desc, status, prio, now, "user", start_ts or None, due_ts or None, project or None),
             )
             con.execute(
                 "INSERT OR REPLACE INTO task_estimates (task_id, estimated_minutes, buffer_percent) VALUES (?, ?, ?)",
@@ -217,6 +218,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             prio_str = body.get("priority", "")
             start_str = body.get("start_date", "")
             due_str = body.get("due_date", "")
+            project = body.get("project", "")
             est_min = body.get("estimated_minutes")
             buf_pct = body.get("buffer_percent")
 
@@ -239,6 +241,9 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 due_ts = date_to_ts(due_str)
                 updates.append("completed_at=?")
                 params.append(due_ts)
+            if body.get("project") is not None:
+                updates.append("project_id=?")
+                params.append(project.strip() or None)
 
             if updates:
                 params.append(task_id)
@@ -460,6 +465,9 @@ h1 span{color:#007FA7;font-weight:400}
 <div id="panel-kanban" class="panel active">
   <div class="toolbar">
     <button class="btn btn-primary" onclick="openCreateModal()">+ Neue Karte</button>
+    <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="">📁 Alle Projekte</option>
+    </select>
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
   <div id="kanban" class="kanban"><div class="loading"><span class="spinner"></span>Lade …</div></div>
@@ -562,6 +570,15 @@ async function loadTasks() {
     allBs = bd.entries || [];
     document.getElementById('statusLine').textContent =
       allTasks.length + ' Aufgaben · ' + allBs.length + ' Brainstorms · ' + new Date().toLocaleTimeString('de-DE');
+
+    // Update project filter
+    const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
+    const filterSel = document.getElementById('projectFilter');
+    const currentVal = filterSel.value;
+    filterSel.innerHTML = '<option value="">📁 Alle Projekte</option>'
+      + projs.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
+    filterSel.value = currentVal;
+
     renderKanban();
     renderGantt();
     renderBrainstorm();
@@ -602,9 +619,11 @@ const COL_NAMES = {'backlog':'📋 Backlog','ready':'🟡 Bereit','running':'�
 const PRIO_C = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
 
 function renderKanban() {
+  const filter = document.getElementById('projectFilter').value;
   const kanban = document.getElementById('kanban');
+  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
   kanban.innerHTML = COLS.map(col => {
-    const items = allTasks.filter(t => t.status === col);
+    const items = filtered.filter(t => t.status === col);
     return `<div class="column">
       <div class="col-header">
         <h3>${COL_NAMES[col]}</h3>
@@ -629,6 +648,7 @@ function renderCard(t) {
   const estHtml = t.estimated_minutes > 0
     ? `<div class="card-est">🕐 ${fmtMinutes(t.estimated_minutes)}${t.buffer_percent ? ' +'+t.buffer_percent+'% Puffer' : ''}</div>`
     : '';
+  const projHtml = t.project_id ? `<span style="background:#e5e7eb;border-radius:3px;padding:1px 5px;font-size:9px;color:#555">📁 ${escHtml(t.project_id)}</span>` : '';
   return `<div class="card prio-${prio}" onclick="editTask('${t.id}')">
     <div class="card-actions" onclick="event.stopPropagation()">
       <button onclick="event.stopPropagation();startPomoForTask('${t.id}')" title="Fokus">🍅</button>
@@ -640,6 +660,7 @@ function renderCard(t) {
     ${datesHtml}
     <div class="card-meta">
       <span style="color:${PRIO_C[prio]||'#999'};font-weight:600">${prio}</span>
+      ${projHtml}
       <select class="status-select" onchange="changeStatus('${t.id}',this.value)" onclick="event.stopPropagation()">
         ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${s}</option>`).join('')}
       </select>
@@ -689,6 +710,10 @@ function openCreateModal() {
           <option value="niedrig">🟢 Niedrig</option>
         </select>
       </div>
+      <div><label>📁 Projekt</label>
+        <input type="text" id="fProject" list="projectFilterList" placeholder="z.B. Jessi, NGD, EnnAIgram">
+        <datalist id="projectFilterList"></datalist>
+      </div>
     </div>
     <label>Status</label>
     <select id="fStatus">
@@ -712,6 +737,7 @@ async function createTask() {
     title,
     body: document.getElementById('fBody').value.trim(),
     priority: document.getElementById('fPrio').value,
+    project: document.getElementById('fProject').value.trim(),
     status: document.getElementById('fStatus').value,
     start_date: document.getElementById('fStart').value,
     due_date: document.getElementById('fDue').value,
@@ -751,6 +777,9 @@ async function editTask(id) {
           <option value="niedrig" ${prio==='niedrig'?'selected':''}>🟢 Niedrig</option>
         </select>
       </div>
+      <div><label>📁 Projekt</label>
+        <input type="text" id="fProject" list="projectFilterList" value="${escHtml(t.project_id||'')}" placeholder="z.B. Jessi, NGD, EnnAIgram">
+      </div>
     </div>
     <div class="row2">
       <div><label>Status</label>
@@ -776,6 +805,7 @@ async function saveTask(id) {
     title: document.getElementById('fTitle').value.trim(),
     body: document.getElementById('fBody').value.trim(),
     priority: document.getElementById('fPrio').value,
+    project: document.getElementById('fProject').value.trim(),
     start_date: document.getElementById('fStart').value,
     due_date: document.getElementById('fDue').value,
     estimated_minutes: parseInt(document.getElementById('fEst').value) || 0,
@@ -818,7 +848,7 @@ function renderGantt() {
   const range = maxT - minT || day;
   function pct(val) { return Math.max(2, ((val - minT) / range) * 100); }
 
-  let html = '<table class="gantt-table"><thead><tr><th>Projekt</th><th>Prio</th><th>Status</th><th>Aufwand</th><th>Start</th><th>Ziel</th></tr></thead><tbody>';
+  let html = '<table class="gantt-table"><thead><tr><th>Projekt</th><th>Prio</th><th>Status</th><th>Aufwand</th><th>📁 Projekt</th><th>Start</th><th>Ziel</th></tr></thead><tbody>';
   tasks.forEach(t => {
     const prio = PRIO_LABEL(t.priority);
     const estStr = t.estimated_minutes > 0 ? fmtMinutes(t.estimated_minutes) + (t.buffer_percent ? ' +'+t.buffer_percent+'%' : '') : '—';
@@ -827,6 +857,7 @@ function renderGantt() {
       <td><span style="color:${PRIO_C[prio]};font-weight:600">${prio}</span></td>
       <td>${COL_NAMES[t.status]||t.status}</td>
       <td style="color:#7C3AED;font-weight:500;font-size:12px">${estStr}</td>
+      <td style="font-size:12px">${escHtml(t.project_id||'—')}</td>
       <td class="gantt-date">${t.started_at ? tsToDate(t.started_at) : (t.created_at ? tsToDate(t.created_at) : '—')}</td>
       <td class="gantt-date">${t.completed_at ? tsToDate(t.completed_at) : (t.status==='completed' ? '—' : 'offen')}</td>
     </tr>`;

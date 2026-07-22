@@ -444,13 +444,13 @@ h1 span{color:#007FA7;font-weight:400}
 <div class="sub" id="statusLine">Lade Daten …</div>
 
 <div class="tabs">
-  <button class="tab active" onclick="switchTab('kanban')">📋 Kanban</button>
-  <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
-  <button class="tab" onclick="switchTab('overview')">📊 Übersicht</button>
+  <button class="tab active" onclick="switchTab('overview')">📊 Übersicht</button>
+  <button class="tab" onclick="switchTab('kanban')">📋 Kanban</button>
   <button class="tab" onclick="switchTab('calendar')">📅 Kalender</button>
+  <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
 </div>
 
-<div id="panel-kanban" class="panel active">
+<div id="panel-kanban" class="panel">
   <div class="toolbar">
     <button class="btn btn-primary" onclick="openCreateModal()">+ Neue Karte</button>
     <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
@@ -471,7 +471,7 @@ h1 span{color:#007FA7;font-weight:400}
   <div id="ganttWrap" class="gantt"><div class="loading"><span class="spinner"></span>Lade …</div></div>
 </div>
 
-<div id="panel-overview" class="panel">
+<div id="panel-overview" class="panel active">
   <div class="toolbar">
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
@@ -863,10 +863,15 @@ function renderGantt() {
     wrap.innerHTML = '<div class="empty-state">Keine Aufgaben vorhanden</div>';
     return;
   }
+  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
+  const dated = filtered.filter(t => t.started_at || t.completed_at);
+  if (!dated.length) {
+    wrap.innerHTML = '<div class="empty-state">Keine Aufgaben mit Datum. Setze Start/Ziel in den Karten.</div>';
+    return;
+  }
   const now = Date.now() / 1000;
   const day = 86400;
-  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
-  const sorted = [...filtered].sort((a,b) => {
+  const sorted = [...dated].sort((a,b) => {
     const pa = typeof a.priority === 'number' ? a.priority : ({hoch:1,mittel:2,niedrig:3}[a.priority]||2);
     const pb = typeof b.priority === 'number' ? b.priority : ({hoch:1,mittel:2,niedrig:3}[b.priority]||2);
     if (pa !== pb) return pa - pb;
@@ -1126,7 +1131,8 @@ function renderCalWeek(wrap) {
   const byDay = days.map(()=>[]);
   const calFilter = document.getElementById('calProjectFilter').value;
   const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
-  calTasks.forEach(t => {
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
+  calDated.forEach(t => {
     const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
     if (!s) return;
     for (let i=0;i<7;i++) if (s<nextDayTs[i]&&e>=dayTs[i]) byDay[i].push(t);
@@ -1171,6 +1177,7 @@ function renderCalMonth(wrap) {
   const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
   const calFilter = document.getElementById('calProjectFilter').value;
   const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
   const tNow = Math.floor(Date.now()/1000);
   let day = 1;
   for (let row = 0; row < 6; row++) {
@@ -1185,7 +1192,7 @@ function renderCalMonth(wrap) {
         h += '<div style="font-size:10px;font-weight:600;color:'+(isT?'#002D69':'#333')+';padding:1px 2px;margin-bottom:2px">'+cellDay+'</div>';
         const dayStart = Math.floor(d.getTime()/1000);
         const dayEnd = dayStart + 86400;
-        const tasks = calTasks.filter(t => {
+        const tasks = calDated.filter(t => {
           const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
           return s && s < dayEnd && e >= dayStart;
         }).slice(0, 3);
@@ -1193,7 +1200,7 @@ function renderCalMonth(wrap) {
           const p = PRIO_LABEL(t.priority);
           h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:2px;padding:1px 2px;margin-bottom:1px;font-size:8px;cursor:pointer;overflow:hidden;white-space:nowrap" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title).substring(0,15)+'</div>';
         });
-        if (tasks.length > 3) h += '<div style="font-size:8px;color:#999">+'+ (calTasks.filter(t => {
+        if (tasks.length > 3) h += '<div style="font-size:8px;color:#999">+'+ (calDated.filter(t => {
           const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
           return s && s < dayEnd && e >= dayStart;
         }).length - 3) +' mehr</div>';
@@ -1220,7 +1227,7 @@ function renderCalYear(wrap) {
     const mName = first.toLocaleDateString('de-DE', {month:'short'});
     const monthStart = Math.floor(first.getTime()/1000);
     const monthEnd = monthStart + lastD * 86400;
-    const tasks = calTasks.filter(t => {
+    const tasks = calDated.filter(t => {
       const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
       return s && s < monthEnd && e >= monthStart;
     });

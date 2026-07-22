@@ -74,6 +74,43 @@ def fetch_tasks():
     return tasks
 
 
+def fetch_routines():
+    con = get_db()
+    rows = con.execute("SELECT * FROM routines ORDER BY category, name").fetchall()
+    routines = [dict(r) for r in rows]
+    # Add today's completion status and streak
+    today_start = int(__import__("time").time()) - 86400  # last 24h
+    for r in routines:
+        log = con.execute(
+            "SELECT COUNT(*) as cnt, MAX(completed_at) as last FROM routine_logs WHERE routine_id=? AND completed_at>?",
+            (r["id"], today_start)
+        ).fetchone()
+        r["done_today"] = log["cnt"] > 0
+        r["last_done"] = log["last"]
+        # Streak: count consecutive days with logs
+        streak = 0
+        logs = con.execute(
+            "SELECT completed_at FROM routine_logs WHERE routine_id=? ORDER BY completed_at DESC LIMIT 365",
+            (r["id"],)
+        ).fetchall()
+        if logs:
+            from datetime import datetime, timedelta
+            # Just return last_completed for now
+            pass
+    con.close()
+    return routines
+
+
+def fetch_routine_log(routine_id):
+    con = get_db()
+    rows = con.execute(
+        "SELECT * FROM routine_logs WHERE routine_id=? ORDER BY completed_at DESC LIMIT 30",
+        (routine_id,)
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
 def fetch_brainstorms():
     con = get_db()
     rows = con.execute(
@@ -109,6 +146,11 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             self.send_html(INDEX_HTML)
         elif path == "/api/tasks":
             self.send_json({"tasks": fetch_tasks()})
+        elif path == "/api/routines":
+            self.send_json({"routines": fetch_routines()})
+        elif path.startswith("/api/routines/") and path.endswith("/log"):
+            rid = path.split("/api/routines/")[1].split("/log")[0]
+            self.send_json({"log": fetch_routine_log(rid)})
         elif path == "/api/brainstorm":
             self.send_json({"entries": fetch_brainstorms()})
         elif path.startswith("/api/tasks/"):
@@ -176,6 +218,23 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             con = get_db()
             con.execute("INSERT INTO brainstorm (content, project, processed, created_at) VALUES (?, ?, 0, ?)",
                         (content, project, now))
+            con.commit()
+            con.close()
+            self.send_json({"ok": True})
+
+        elif path.startswith("/api/routines/") and path.endswith("/toggle"):
+            rid = int(path.split("/api/routines/")[1].split("/toggle")[0])
+            now = int(time.time())
+            con = get_db()
+            log = con.execute(
+                "SELECT COUNT(*) as cnt FROM routine_logs WHERE routine_id=? AND completed_at>?",
+                (rid, now - 86400)
+            ).fetchone()
+            if log["cnt"] > 0:
+                # Undo: remove today's entry
+                con.execute("DELETE FROM routine_logs WHERE routine_id=? AND completed_at>?", (rid, now - 86400))
+            else:
+                con.execute("INSERT INTO routine_logs (routine_id, completed_at) VALUES (?, ?)", (rid, now))
             con.commit()
             con.close()
             self.send_json({"ok": True})
@@ -448,6 +507,7 @@ h1 span{color:#007FA7;font-weight:400}
   <button class="tab" onclick="switchTab('kanban')">📋 Kanban</button>
   <button class="tab" onclick="switchTab('calendar')">📅 Kalender</button>
   <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
+  <button class="tab" onclick="switchTab('routines')">🔄 Routinen</button>
 </div>
 
 <div id="panel-kanban" class="panel">
@@ -469,6 +529,13 @@ h1 span{color:#007FA7;font-weight:400}
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
   <div id="ganttWrap" class="gantt"><div class="loading"><span class="spinner"></span>Lade …</div></div>
+</div>
+
+<div id="panel-routines" class="panel">
+  <div class="toolbar">
+    <button class="btn btn-ghost" onclick="loadRoutines()">🔄 Aktualisieren</button>
+  </div>
+  <div id="routinesWrap"><div class="loading"><span class="spinner"></span>Lade …</div></div>
 </div>
 
 <div id="panel-overview" class="panel active">
@@ -1172,6 +1239,51 @@ function filterProject(name) {
   renderKanban();
 }
 
+// ── Routinen ──
+let routines = [];
+async function loadRoutines() {
+  try {
+    const d = await api('/api/routines');
+    routines = d.routines || [];
+    renderRoutines();
+  } catch(e) { console.error(e); }
+}
+function renderRoutines() {
+  const wrap = document.getElementById('routinesWrap');
+  if (!routines.length) {
+    wrap.innerHTML = '<div class="empty-state">Keine Routinen angelegt</div>';
+    return;
+  }
+  const cats = [...new Set(routines.map(r => r.category).filter(Boolean))];
+  let html = '';
+  cats.forEach(cat => {
+    const items = routines.filter(r => r.category === cat);
+    html += '<div style="margin-bottom:16px">'
+      + '<h3 style="font-size:14px;color:#002D69;margin-bottom:8px">'+escHtml(cat)+'</h3>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">';
+    items.forEach(r => {
+      const freqLabels = {'daily':'täglich','weekly':'wöchentlich','biweekly':'14-tägig','monthly':'monatlich'};
+      const freqColor = r.done_today ? '#059669' : (r.freq==='daily' ? '#DD3221' : '#f59e0b');
+      html += '<div style="background:#fff;border-radius:8px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;align-items:center;gap:12px;cursor:pointer;border-left:4px solid '+(r.done_today?'#059669':'#e5e7eb')+'" onclick="toggleRoutine('+r.id+')">'
+        + '<div style="width:32px;height:32px;border-radius:50%;background:'+(r.done_today?'#059669':'#e5e7eb')+';color:'+(r.done_today?'#fff':'#999')+';display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">'+(r.done_today?'✅':'')+'</div>'
+        + '<div style="flex:1">'
+        + '<div style="font-size:13px;font-weight:600;color:'+(r.done_today?'#999':'#1a1a2e')+'">'+escHtml(r.name)+'</div>'
+        + '<div style="font-size:10px;color:#888;margin-top:2px">'+escHtml(freqLabels[r.freq]||r.freq)+(r.days?' · '+r.days:'')+'</div>'
+        + (r.notes ? '<div style="font-size:10px;color:#aaa;margin-top:1px">'+escHtml(r.notes).substring(0,60)+'</div>' : '')
+        + '</div>'
+        + '<div style="text-align:right;font-size:10px;color:#999;flex-shrink:0">'
+        + (r.last_done ? '<div>'+new Date(r.last_done*1000).toLocaleDateString('de-DE')+'</div>' : '')
+        + '</div></div>';
+    });
+    html += '</div></div>';
+  });
+  wrap.innerHTML = html;
+}
+async function toggleRoutine(id) {
+  await api('/api/routines/'+id+'/toggle', {method:'POST'});
+  await loadRoutines();
+}
+
 // ── Calendar View ──
 let calOffset = 0;
 let calView = 'week';
@@ -1377,6 +1489,7 @@ function switchTab(name) {
   if (name === 'gantt') renderGantt();
   if (name === 'overview') renderOverview();
   if (name === 'calendar') renderCalendar();
+  if (name === 'routines') renderRoutines();
 }
 
 // Restore title when timer done
@@ -1388,6 +1501,7 @@ setInterval(() => {
 
 // ── Init ──
 loadTasks();
+loadRoutines();
 </script>
 </body>
 </html>

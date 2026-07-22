@@ -490,6 +490,7 @@ h1 span{color:#007FA7;font-weight:400}
     <button class="btn btn-ghost" onclick="loadTasks()">🔄</button>
     <span style="flex:1"></span>
     <button class="btn btn-sm cal-vw" data-vw="week" onclick="calSetView('week')" style="background:#002D69;color:#fff">Woche</button>
+    <button class="btn btn-sm cal-vw" data-vw="day" onclick="calSetView('day')">Tag</button>
     <button class="btn btn-sm cal-vw" data-vw="month" onclick="calSetView('month')">Monat</button>
     <button class="btn btn-sm cal-vw" data-vw="year" onclick="calSetView('year')">Jahr</button>
   </div>
@@ -896,7 +897,7 @@ function renderGantt() {
     const prio = PRIO_LABEL(t.priority);
     const estStr = t.estimated_minutes > 0 ? fmtMinutes(t.estimated_minutes) + (t.buffer_percent ? ' +'+t.buffer_percent+'%' : '') : '—';
     html += `<tr>
-      <td><strong>${escHtml(t.title)}</strong></td>
+      <td><strong style="${t.status==='completed'?'text-decoration:line-through;color:#999':''}">${escHtml(t.title)}</strong></td>
       <td><span style="color:${PRIO_C[prio]};font-weight:600">${prio}</span></td>
       <td>${COL_NAMES[t.status]||t.status}</td>
       <td style="color:#7C3AED;font-weight:500;font-size:12px">${estStr}</td>
@@ -914,7 +915,7 @@ function renderGantt() {
     const width = Math.max(3, pct(t._end) - left);
     const opacity = t.status === 'completed' ? '0.5' : '1';
     html += `<div class="timeline-row">
-      <div class="timeline-label" title="${escHtml(t.title)}">${escHtml(t.title)}</div>
+      <div class="timeline-label" title="${escHtml(t.title)}" style="${t.status==='completed'?'text-decoration:line-through;color:#999':''}">${escHtml(t.title)}</div>
       <div class="timeline-track">
         <div class="timeline-fill" style="left:${left}%;width:${width}%;background:${PRIO_C[prio]};opacity:${opacity}"></div>
         <div class="timeline-text" style="left:${left}%;width:${width}%">${escHtml(t.title)}</div>
@@ -1113,6 +1114,7 @@ function calToday() { calOffset = 0; renderCalendar(); }
 function renderCalendar() {
   const wrap = document.getElementById('calendarWrap');
   if (calView === 'week') return renderCalWeek(wrap);
+  if (calView === 'day') return renderCalDay(wrap);
   if (calView === 'month') return renderCalMonth(wrap);
   renderCalYear(wrap);
 }
@@ -1149,13 +1151,52 @@ function renderCalWeek(wrap) {
     h += '<td'+t+' style="vertical-align:top;padding:4px;border:1px solid #e5e7eb;height:120px;width:14.28%">';
     if (byDay[i].length) byDay[i].forEach(t => {
       const p = PRIO_LABEL(t.priority);
-      h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:4px;padding:2px 4px;margin-bottom:2px;font-size:10px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title)+'</div>';
+      h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:4px;padding:2px 4px;margin-bottom:2px;font-size:10px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'+(t.status==='completed'?'opacity:0.5;text-decoration:line-through':'')+'" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title)+'</div>';
     });
     h += '</td>';
   });
   h += '</tr></tbody></table>';
   h += '<div style="margin-top:8px;font-size:11px;color:#888;display:flex;gap:12px;flex-wrap:wrap">';
   Object.entries(colors).forEach(([p,c]) => h += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+c+';margin-right:4px;vertical-align:middle"></span>'+p+'</span>');
+  h += '</div>';
+  wrap.innerHTML = h;
+}
+
+function renderCalDay(wrap) {
+  const now = new Date();
+  now.setDate(now.getDate() + calOffset);
+  const fmt = d => d.toLocaleDateString('de-DE', {weekday:'long', day:'2-digit', month:'long', year:'numeric'});
+  document.getElementById('calLabel').textContent = fmt(now);
+  const dayStart = Math.floor(new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime()/1000);
+  const dayEnd = dayStart + 86400;
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
+  const tasks = calDated.filter(t => {
+    const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+    return s && s < dayEnd && e >= dayStart;
+  });
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const isToday = new Date().toDateString() === now.toDateString();
+  let h = '<div style="background:'+(isToday?'#f0f4ff':'#fff')+';border-radius:8px;padding:16px;min-height:400px">';
+  if (!tasks.length) {
+    h += '<div class="empty-state">Keine Aufgaben an diesem Tag</div>';
+  } else {
+    tasks.sort((a,b) => (a.priority||2)-(b.priority||2));
+    tasks.forEach(t => {
+      const prio = PRIO_LABEL(t.priority);
+      const done = t.status === 'completed';
+      h += '<div style="border-left:4px solid '+(colors[prio]||'#999')+';background:'+(done?'#f9f9f9':'#fff')+';border-radius:6px;padding:12px;margin-bottom:8px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08)" onclick="editTask(\''+t.id+'\')">'
+        + '<div style="font-size:14px;font-weight:600;color:'+(done?'#999':'#1a1a2e')+';'+(done?'text-decoration:line-through':'')+'">'+escHtml(t.title)+'</div>'
+        + (t.body ? '<div style="font-size:12px;color:#666;margin-top:4px;'+(done?'text-decoration:line-through':'')+'">'+escHtml(t.body).substring(0,120)+'</div>' : '')
+        + '<div style="font-size:11px;color:#999;margin-top:6px;display:flex;gap:8px">'
+        + '<span style="color:'+(colors[prio]||'#999')+';font-weight:600">'+prio+'</span>'
+        + (t.project_id ? '<span>📁 '+escHtml(t.project_id)+'</span>' : '')
+        + '<span>'+COL_NAMES[t.status]||t.status+'</span>'
+        + (t.estimated_minutes ? '<span>🕐 '+_fmtM(t.estimated_minutes)+'</span>' : '')
+        + '</div></div>';
+    });
+  }
   h += '</div>';
   wrap.innerHTML = h;
 }
@@ -1198,7 +1239,7 @@ function renderCalMonth(wrap) {
         }).slice(0, 3);
         tasks.forEach(t => {
           const p = PRIO_LABEL(t.priority);
-          h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:2px;padding:1px 2px;margin-bottom:1px;font-size:8px;cursor:pointer;overflow:hidden;white-space:nowrap" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title).substring(0,15)+'</div>';
+          h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:2px;padding:1px 2px;margin-bottom:1px;font-size:8px;cursor:pointer;overflow:hidden;white-space:nowrap;'+(t.status==='completed'?'opacity:0.5;text-decoration:line-through':'')+'" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title).substring(0,15)+'</div>';
         });
         if (tasks.length > 3) h += '<div style="font-size:8px;color:#999">+'+ (calDated.filter(t => {
           const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;

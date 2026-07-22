@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interaktives Kanban + Gantt — API-Server + Frontend.
+"""Interaktives Kanban + Gantt + Brainstorming — API-Server + Frontend.
 
 Start:  python3 server.py
 Dann:   http://localhost:8089
@@ -9,8 +9,7 @@ import json
 import sqlite3
 import uuid
 import time
-import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
@@ -21,15 +20,7 @@ HOST = "127.0.0.1"
 
 PRIO_LABELS = {1: "hoch", 2: "mittel", 3: "niedrig"}
 PRIO_VALUES = {"hoch": 1, "mittel": 2, "niedrig": 3}
-
 STATUS_ORDER = ["backlog", "ready", "running", "completed", "blocked"]
-STATUS_NAMES = {
-    "backlog": "📋 Backlog",
-    "ready": "🟡 Bereit",
-    "running": "🟢 In Arbeit",
-    "completed": "✅ Erledigt",
-    "blocked": "🔴 Blockiert",
-}
 
 
 # ─── DB ───────────────────────────────────────────────────────────────────────
@@ -41,8 +32,23 @@ def get_db():
     return con
 
 
-def dict_row(row):
-    return dict(row) if row else None
+def ensure_brainstorm_table():
+    """Create brainstorming table if not exists."""
+    con = get_db()
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS brainstorm (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            project TEXT DEFAULT '',
+            processed INTEGER DEFAULT 0,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    con.commit()
+    con.close()
+
+
+ensure_brainstorm_table()
 
 
 def fetch_tasks():
@@ -52,17 +58,36 @@ def fetch_tasks():
         "completed_at, assignee FROM tasks ORDER BY priority, created_at"
     ).fetchall()
     con.close()
-    return [dict_row(r) for r in rows]
+    return [dict(r) for r in rows]
 
 
-def fetch_task(task_id):
+def fetch_brainstorms():
     con = get_db()
-    row = con.execute(
-        "SELECT id, title, body, status, priority, created_at, started_at, "
-        "completed_at, assignee FROM tasks WHERE id=?", (task_id,)
-    ).fetchone()
+    rows = con.execute(
+        "SELECT id, content, project, processed, created_at FROM brainstorm ORDER BY created_at DESC"
+    ).fetchall()
     con.close()
-    return dict_row(row)
+    return [dict(r) for r in rows]
+
+
+def ts_to_date(ts):
+    """Unix timestamp → YYYY-MM-DD string or empty."""
+    if not ts:
+        return ""
+    try:
+        return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+    except (ValueError, OSError):
+        return ""
+
+
+def date_to_ts(date_str):
+    """YYYY-MM-DD → unix timestamp or None."""
+    if not date_str or not date_str.strip():
+        return None
+    try:
+        return int(datetime.strptime(date_str.strip(), "%Y-%m-%d").timestamp())
+    except ValueError:
+        return None
 
 
 # ─── API Handler ──────────────────────────────────────────────────────────────
@@ -70,45 +95,70 @@ def fetch_task(task_id):
 class KanbanHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
-        if self.path == "/":
+        path = self.path.rstrip("/")
+        if path == "/":
             self.send_html(INDEX_HTML)
-        elif self.path == "/api/tasks":
+        elif path == "/api/tasks":
             self.send_json({"tasks": fetch_tasks()})
-        elif self.path.startswith("/api/tasks/"):
-            task_id = self.path.split("/api/tasks/")[1].split("/")[0]
+        elif path == "/api/brainstorm":
+            self.send_json({"entries": fetch_brainstorms()})
+        elif path.startswith("/api/tasks/"):
+            task_id = path.split("/api/tasks/")[1].split("/")[0]
             if task_id:
-                t = fetch_task(task_id)
-                self.send_json(t if t else {"error": "not found"}, 200 if t else 404)
+                con = get_db()
+                row = con.execute(
+                    "SELECT id, title, body, status, priority, created_at, started_at, "
+                    "completed_at, assignee FROM tasks WHERE id=?", (task_id,)
+                ).fetchone()
+                con.close()
+                t = dict(row) if row else {"error": "not found"}
+                self.send_json(t, 200 if row else 404)
             else:
                 self.send_json({"error": "missing id"}, 400)
         else:
-            self.send_html(INDEX_HTML)  # SPA fallback
+            self.send_html(INDEX_HTML)
 
     def do_POST(self):
         body = self._read_body()
         path = self.path.rstrip("/")
 
         if path == "/api/tasks":
-            title = body.get("title", "Neue Aufgabe").strip()
-            if not title:
-                title = "Neue Aufgabe"
+            title = body.get("title", "Neue Aufgabe").strip() or "Neue Aufgabe"
             prio = PRIO_VALUES.get(body.get("priority", "mittel"), 2)
             desc = body.get("body", "").strip()
             status = body.get("status", "ready")
             if status not in STATUS_ORDER:
                 status = "ready"
+            start_ts = date_to_ts(body.get("start_date"))
+            due_ts = date_to_ts(body.get("due_date"))
 
             task_id = f"t_{uuid.uuid4().hex[:8]}"
             now = int(time.time())
             con = get_db()
             con.execute(
-                "INSERT INTO tasks (id, title, body, status, priority, created_at, assignee) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (task_id, title, desc, status, prio, now, "user"),
+                "INSERT INTO tasks (id, title, body, status, priority, created_at, assignee, started_at, completed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, title, desc, status, prio, now, "user", start_ts or None, due_ts or None),
             )
             con.commit()
             con.close()
             self.send_json({"ok": True, "id": task_id})
+
+        elif path == "/api/brainstorm":
+            content = body.get("content", "").strip()
+            project = body.get("project", "").strip()
+            if not content:
+                self.send_json({"error": "empty content"}, 400)
+                return
+            now = int(time.time())
+            con = get_db()
+            con.execute(
+                "INSERT INTO brainstorm (content, project, processed, created_at) VALUES (?, ?, 0, ?)",
+                (content, project, now),
+            )
+            con.commit()
+            con.close()
+            self.send_json({"ok": True})
 
         elif path.startswith("/api/tasks/") and path.endswith("/status"):
             task_id = path.split("/api/tasks/")[1].split("/status")[0]
@@ -116,13 +166,12 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             if new_status not in STATUS_ORDER:
                 self.send_json({"error": f"invalid status: {new_status}"}, 400)
                 return
-
             now = int(time.time())
             con = get_db()
             if new_status == "running":
-                con.execute("UPDATE tasks SET status=?, started_at=? WHERE id=?", (new_status, now, task_id))
+                con.execute("UPDATE tasks SET status=?, started_at=COALESCE(started_at,?) WHERE id=?", (new_status, now, task_id))
             elif new_status == "completed":
-                con.execute("UPDATE tasks SET status=?, completed_at=? WHERE id=?", (new_status, now, task_id))
+                con.execute("UPDATE tasks SET status=?, completed_at=COALESCE(completed_at,?) WHERE id=?", (new_status, now, task_id))
             else:
                 con.execute("UPDATE tasks SET status=? WHERE id=?", (new_status, task_id))
             con.commit()
@@ -142,22 +191,34 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "missing id"}, 400)
                 return
 
+            updates = []
+            params = []
+
             title = body.get("title", "").strip()
             desc = body.get("body", "").strip()
             prio_str = body.get("priority", "")
-            prio = PRIO_VALUES.get(prio_str) if prio_str else None
+            start_str = body.get("start_date", "")
+            due_str = body.get("due_date", "")
 
-            updates = []
-            params = []
             if title:
                 updates.append("title=?")
                 params.append(title)
-            if desc:
+            if body.get("body") is not None:
                 updates.append("body=?")
                 params.append(desc)
-            if prio:
-                updates.append("priority=?")
-                params.append(prio)
+            if prio_str:
+                prio = PRIO_VALUES.get(prio_str)
+                if prio:
+                    updates.append("priority=?")
+                    params.append(prio)
+            if body.get("start_date") is not None:
+                start_ts = date_to_ts(start_str)
+                updates.append("started_at=?")
+                params.append(start_ts)
+            if body.get("due_date") is not None:
+                due_ts = date_to_ts(due_str)
+                updates.append("completed_at=?")
+                params.append(due_ts)
 
             if not updates:
                 self.send_json({"ok": True})
@@ -181,6 +242,13 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 return
             con = get_db()
             con.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+            con.commit()
+            con.close()
+            self.send_json({"ok": True})
+        elif path.startswith("/api/brainstorm/"):
+            entry_id = path.split("/api/brainstorm/")[1].split("/")[0]
+            con = get_db()
+            con.execute("DELETE FROM brainstorm WHERE id=?", (entry_id,))
             con.commit()
             con.close()
             self.send_json({"ok": True})
@@ -218,7 +286,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
         self.wfile.write(html.encode("utf-8"))
 
     def log_message(self, format, *args):
-        pass  # quiet
+        pass
 
 
 # ─── Frontend (embedded) ──────────────────────────────────────────────────────
@@ -235,17 +303,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 h1{font-size:22px;color:#002D69;margin-bottom:4px}
 h1 span{color:#007FA7;font-weight:400}
 .sub{font-size:13px;color:#888;margin-bottom:16px}
-
-/* Tabs */
 .tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:2px solid #e5e7eb}
 .tab{padding:10px 20px;cursor:pointer;font-size:14px;font-weight:600;background:transparent;color:#888;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;transition:.2s}
 .tab:hover{color:#002D69}
 .tab.active{color:#002D69;border-bottom-color:#002D69}
 .panel{display:none}
 .panel.active{display:block}
-
-/* Toolbar */
-.toolbar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.toolbar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
 .btn{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:.2s;display:inline-flex;align-items:center;gap:4px}
 .btn-primary{background:#002D69;color:#fff}
 .btn-primary:hover{background:#003d8f}
@@ -254,6 +318,8 @@ h1 span{color:#007FA7;font-weight:400}
 .btn-danger:hover{background:#B91C1C}
 .btn-ghost{background:transparent;color:#666}
 .btn-ghost:hover{background:#e5e7eb;color:#333}
+.btn-success{background:#059669;color:#fff}
+.btn-success:hover{background:#047857}
 
 /* Kanban */
 .kanban{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;min-height:60vh}
@@ -270,6 +336,7 @@ h1 span{color:#007FA7;font-weight:400}
 .card-title{font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:2px;padding-right:50px}
 .card-body{font-size:11px;color:#666;line-height:1.3;margin-top:4px}
 .card-meta{font-size:10px;color:#999;margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
+.card-dates{font-size:9px;color:#aaa;margin-top:4px;display:flex;gap:6px}
 .card-actions{position:absolute;top:6px;right:6px;display:flex;gap:2px}
 .card-actions button{background:none;border:none;cursor:pointer;font-size:14px;color:#999;padding:2px 4px;border-radius:4px;transition:.2s}
 .card-actions button:hover{background:#f0f0f0;color:#333}
@@ -278,14 +345,15 @@ h1 span{color:#007FA7;font-weight:400}
 /* Modal */
 .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center;padding:20px}
 .modal-overlay.show{display:flex}
-.modal{background:#fff;border-radius:12px;padding:24px;max-width:520px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,.2);animation:fadeIn .2s}
+.modal{background:#fff;border-radius:12px;padding:24px;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,.2);animation:fadeIn .2s}
 @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 .modal-close{float:right;font-size:22px;cursor:pointer;color:#999;line-height:1}
 .modal-close:hover{color:#333}
 .modal h2{color:#002D69;font-size:18px;margin-bottom:16px;padding-right:30px}
 .modal label{display:block;font-size:12px;font-weight:600;color:#666;margin-bottom:4px;margin-top:12px}
-.modal input[type=text],.modal textarea,.modal select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit}
+.modal input[type=text],.modal input[type=date],.modal textarea,.modal select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit}
 .modal textarea{min-height:80px;resize:vertical}
+.modal .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .modal .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 
 /* Gantt */
@@ -293,8 +361,6 @@ h1 span{color:#007FA7;font-weight:400}
 .gantt-table{width:100%;border-collapse:collapse;font-size:13px;min-width:700px}
 .gantt-table th{background:#002D69;color:#fff;padding:8px 12px;text-align:left;font-size:12px;position:sticky;top:0}
 .gantt-table td{padding:8px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
-.gantt-bar-wrap{display:flex;align-items:center;gap:6px}
-.gantt-bar{display:block;height:22px;border-radius:4px;color:#fff;font-size:10px;font-weight:600;line-height:22px;padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:12px;transition:width .3s}
 .gantt-date{font-size:10px;color:#999;white-space:nowrap}
 .gantt-timeline{position:relative;margin-top:16px;padding-top:12px;border-top:1px solid #e5e7eb}
 .gantt-timeline .tl-label{font-size:11px;font-weight:600;color:#666;margin-bottom:6px}
@@ -304,17 +370,29 @@ h1 span{color:#007FA7;font-weight:400}
 .timeline-fill{position:absolute;top:0;left:0;height:100%;border-radius:4px;min-width:4px;transition:width .5s}
 .timeline-text{position:absolute;top:0;left:4px;height:100%;display:flex;align-items:center;font-size:10px;color:#fff;font-weight:600;white-space:nowrap}
 
-/* Empty state */
-.empty-state{padding:40px 20px;text-align:center;color:#aaa;font-size:14px}
+/* Brainstorming */
+.brainstorm-panel{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.brainstorm-input{background:#fff;border-radius:10px;padding:16px}
+.brainstorm-input textarea{width:100%;min-height:150px;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit;resize:vertical}
+.brainstorm-input .meta-row{display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap}
+.brainstorm-input .meta-row input{flex:1;min-width:120px;padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px}
+.brainstorm-list{background:#fff;border-radius:10px;padding:16px;max-height:70vh;overflow-y:auto}
+.bstorm-entry{padding:10px 0;border-bottom:1px solid #f0f0f0}
+.bstorm-entry:last-child{border-bottom:none}
+.bstorm-content{font-size:13px;color:#333;margin-bottom:4px;white-space:pre-wrap}
+.bstorm-meta{font-size:10px;color:#999;display:flex;gap:8px;align-items:center}
+.bstorm-project{display:inline-block;background:#e5e7eb;border-radius:4px;padding:1px 6px;font-size:10px;color:#555}
+.bstorm-actions{display:flex;gap:4px;margin-top:4px}
+.bstorm-actions button{font-size:10px;padding:2px 8px}
 
-/* Loading */
+/* Misc */
+.empty-state{padding:40px 20px;text-align:center;color:#aaa;font-size:14px}
 .loading{text-align:center;padding:40px;color:#888;font-size:14px}
 .spinner{display:inline-block;width:20px;height:20px;border:3px solid #e5e7eb;border-top-color:#002D69;border-radius:50%;animation:spin .6s linear infinite;margin-right:8px;vertical-align:middle}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-@media(max-width:1000px){.kanban{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:700px){.kanban{grid-template-columns:repeat(2,1fr)}
-.timeline-label{width:100px;font-size:11px}}
+@media(max-width:1000px){.kanban{grid-template-columns:repeat(3,1fr)}.brainstorm-panel{grid-template-columns:1fr}}
+@media(max-width:700px){.kanban{grid-template-columns:repeat(2,1fr)}.timeline-label{width:100px;font-size:11px}}
 @media(max-width:500px){.kanban{grid-template-columns:1fr}}
 </style>
 </head>
@@ -325,6 +403,7 @@ h1 span{color:#007FA7;font-weight:400}
 <div class="tabs">
   <button class="tab active" onclick="switchTab('kanban')">📋 Kanban</button>
   <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
+  <button class="tab" onclick="switchTab('brainstorm')">💡 Brainstorming</button>
 </div>
 
 <div id="panel-kanban" class="panel active">
@@ -342,6 +421,26 @@ h1 span{color:#007FA7;font-weight:400}
   <div id="ganttWrap" class="gantt"><div class="loading"><span class="spinner"></span>Lade …</div></div>
 </div>
 
+<div id="panel-brainstorm" class="panel">
+  <div class="brainstorm-panel">
+    <div class="brainstorm-input">
+      <label style="font-weight:600;font-size:14px;color:#002D69">💡 Gedanken reinschmeißen</label>
+      <textarea id="bsInput" placeholder="Was beschäftigt dich? Ideen, To-dos, Gedankenfetzen …"></textarea>
+      <div class="meta-row">
+        <input id="bsProject" placeholder="Projekt (optional, z.B. Jessi, NGD, EnnAIgram)" list="projectList">
+        <datalist id="projectList"></datalist>
+        <button class="btn btn-success btn-sm" onclick="submitBrainstorm()">Abschicken</button>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:#888">
+        <em>Ich mach daraus Kanban-Karten – sag einfach Bescheid wenn du bereit bist.</em>
+      </div>
+    </div>
+    <div class="brainstorm-list" id="bsList">
+      <div class="loading"><span class="spinner"></span>Lade …</div>
+    </div>
+  </div>
+</div>
+
 <!-- Modal -->
 <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
   <div class="modal" id="modalContent">
@@ -354,6 +453,7 @@ h1 span{color:#007FA7;font-weight:400}
 <script>
 // ── State ──
 let allTasks = [];
+let allBs = [];
 
 // ── API ──
 async function api(path, opts={}) {
@@ -368,16 +468,41 @@ async function api(path, opts={}) {
 async function loadTasks() {
   document.getElementById('statusLine').textContent = 'Lade …';
   try {
-    const data = await api('/api/tasks');
-    allTasks = data.tasks || [];
+    const [td, bd] = await Promise.all([
+      api('/api/tasks'),
+      api('/api/brainstorm')
+    ]);
+    allTasks = td.tasks || [];
+    allBs = bd.entries || [];
     document.getElementById('statusLine').textContent =
-      allTasks.length + ' Aufgaben · ' + new Date().toLocaleTimeString('de-DE');
+      allTasks.length + ' Aufgaben · ' + allBs.length + ' Brainstorms · ' + new Date().toLocaleTimeString('de-DE');
     renderKanban();
     renderGantt();
+    renderBrainstorm();
   } catch(e) {
     document.getElementById('statusLine').textContent = '⚠️ Fehler beim Laden';
     console.error(e);
   }
+}
+
+// ── Helpers ──
+function PRIO_LABEL(p) {
+  if (typeof p === 'number') return {1:'hoch',2:'mittel',3:'niedrig'}[p]||'mittel';
+  if (['hoch','mittel','niedrig'].includes(p)) return p;
+  return 'mittel';
+}
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+function tsToDate(ts) {
+  if (!ts) return '';
+  try { return new Date(ts * 1000).toLocaleDateString('de-DE'); } catch(e) { return ''; }
+}
+function tsToDateInput(ts) {
+  if (!ts) return '';
+  try { return new Date(ts * 1000).toISOString().split('T')[0]; } catch(e) { return ''; }
 }
 
 // ── Kanban ──
@@ -405,12 +530,18 @@ function renderKanban() {
 function renderCard(t) {
   const prio = PRIO_LABEL(t.priority);
   const bodyShort = t.body ? t.body.substring(0, 80) + (t.body.length > 80 ? '…' : '') : '';
+  const startStr = tsToDate(t.started_at);
+  const dueStr = tsToDate(t.completed_at);
+  const datesHtml = (startStr || dueStr)
+    ? `<div class="card-dates">${startStr ? '📅 '+startStr : ''} ${dueStr ? '→ '+dueStr : ''}</div>`
+    : '';
   return `<div class="card prio-${prio}" onclick="editTask('${t.id}')">
     <div class="card-actions" onclick="event.stopPropagation()">
       <button onclick="deleteTask('${t.id}')" title="Löschen">🗑</button>
     </div>
     <div class="card-title">${escHtml(t.title)}</div>
     ${bodyShort ? `<div class="card-body">${escHtml(bodyShort)}</div>` : ''}
+    ${datesHtml}
     <div class="card-meta">
       <span style="color:${PRIO_C[prio]||'#999'};font-weight:600">${prio}</span>
       <select class="status-select" onchange="changeStatus('${t.id}',this.value)" onclick="event.stopPropagation()">
@@ -420,31 +551,14 @@ function renderCard(t) {
   </div>`;
 }
 
-function PRIO_LABEL(p) {
-  if (typeof p === 'number') return {1:'hoch',2:'mittel',3:'niedrig'}[p]||'mittel';
-  if (['hoch','mittel','niedrig'].includes(p)) return p;
-  return 'mittel';
-}
-
-function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
-}
-
-// ── Status change ──
+// ── Status + Delete ──
 async function changeStatus(id, newStatus) {
-  await api(`/api/tasks/${id}/status`, {
-    method: 'POST',
-    body: JSON.stringify({status: newStatus})
-  });
+  await api('/api/tasks/'+id+'/status', {method:'POST', body:JSON.stringify({status:newStatus})});
   await loadTasks();
 }
-
-// ── Delete ──
 async function deleteTask(id) {
   if (!confirm('Aufgabe löschen?')) return;
-  await api(`/api/tasks/${id}`, {method: 'DELETE'});
+  await api('/api/tasks/'+id, {method:'DELETE'});
   await loadTasks();
 }
 
@@ -456,24 +570,31 @@ function openCreateModal() {
     <input type="text" id="fTitle" placeholder="Aufgabe …" autofocus>
     <label>Beschreibung</label>
     <textarea id="fBody" placeholder="Details …"></textarea>
-    <label>Priorität</label>
-    <select id="fPrio">
-      <option value="hoch">🔴 Hoch</option>
-      <option value="mittel" selected>🟡 Mittel</option>
-      <option value="niedrig">🟢 Niedrig</option>
-    </select>
-    <label>Status</label>
-    <select id="fStatus">
-      <option value="backlog">📋 Backlog</option>
-      <option value="ready" selected>🟡 Bereit</option>
-      <option value="running">🟢 In Arbeit</option>
-      <option value="blocked">🔴 Blockiert</option>
-    </select>
+    <div class="row2">
+      <div><label>Start</label><input type="date" id="fStart"></div>
+      <div><label>Ziel</label><input type="date" id="fDue"></div>
+    </div>
+    <div class="row2">
+      <div><label>Priorität</label>
+        <select id="fPrio">
+          <option value="hoch">🔴 Hoch</option>
+          <option value="mittel" selected>🟡 Mittel</option>
+          <option value="niedrig">🟢 Niedrig</option>
+        </select>
+      </div>
+      <div><label>Status</label>
+        <select id="fStatus">
+          <option value="backlog">📋 Backlog</option>
+          <option value="ready" selected>🟡 Bereit</option>
+          <option value="running">🟢 In Arbeit</option>
+          <option value="blocked">🔴 Blockiert</option>
+        </select>
+      </div>
+    </div>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
       <button class="btn btn-primary" onclick="createTask()">Erstellen</button>
-    </div>
-  `;
+    </div>`;
   document.getElementById('modalOverlay').classList.add('show');
   setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
 }
@@ -481,15 +602,14 @@ function openCreateModal() {
 async function createTask() {
   const title = document.getElementById('fTitle').value.trim();
   if (!title) { alert('Titel ist Pflicht!'); return; }
-  await api('/api/tasks', {
-    method: 'POST',
-    body: JSON.stringify({
-      title,
-      body: document.getElementById('fBody').value.trim(),
-      priority: document.getElementById('fPrio').value,
-      status: document.getElementById('fStatus').value,
-    })
-  });
+  await api('/api/tasks', {method:'POST', body:JSON.stringify({
+    title,
+    body: document.getElementById('fBody').value.trim(),
+    priority: document.getElementById('fPrio').value,
+    status: document.getElementById('fStatus').value,
+    start_date: document.getElementById('fStart').value,
+    due_date: document.getElementById('fDue').value,
+  })});
   closeModal();
   await loadTasks();
 }
@@ -505,30 +625,41 @@ async function editTask(id) {
     <input type="text" id="fTitle" value="${escHtml(t.title)}">
     <label>Beschreibung</label>
     <textarea id="fBody">${escHtml(t.body||'')}</textarea>
-    <label>Priorität</label>
-    <select id="fPrio">
-      <option value="hoch" ${prio==='hoch'?'selected':''}>🔴 Hoch</option>
-      <option value="mittel" ${prio==='mittel'?'selected':''}>🟡 Mittel</option>
-      <option value="niedrig" ${prio==='niedrig'?'selected':''}>🟢 Niedrig</option>
-    </select>
+    <div class="row2">
+      <div><label>Start</label><input type="date" id="fStart" value="${tsToDateInput(t.started_at)}"></div>
+      <div><label>Ziel</label><input type="date" id="fDue" value="${tsToDateInput(t.completed_at)}"></div>
+    </div>
+    <div class="row2">
+      <div><label>Priorität</label>
+        <select id="fPrio">
+          <option value="hoch" ${prio==='hoch'?'selected':''}>🔴 Hoch</option>
+          <option value="mittel" ${prio==='mittel'?'selected':''}>🟡 Mittel</option>
+          <option value="niedrig" ${prio==='niedrig'?'selected':''}>🟢 Niedrig</option>
+        </select>
+      </div>
+      <div><label>Status</label>
+        <select id="fStatus" onchange="changeStatus('${t.id}',this.value)">
+          ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${COL_NAMES[s]}</option>`).join('')}
+        </select>
+      </div>
+    </div>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
       <button class="btn btn-danger" onclick="deleteTask('${t.id}')">🗑 Löschen</button>
       <button class="btn btn-primary" onclick="saveTask('${t.id}')">Speichern</button>
-    </div>
-  `;
+    </div>`;
   document.getElementById('modalOverlay').classList.add('show');
   setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
 }
 
 async function saveTask(id) {
-  const title = document.getElementById('fTitle').value.trim();
-  const body = document.getElementById('fBody').value.trim();
-  const prio = document.getElementById('fPrio').value;
-  await api(`/api/tasks/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify({title, body, priority: prio})
-  });
+  await api('/api/tasks/'+id, {method:'PUT', body:JSON.stringify({
+    title: document.getElementById('fTitle').value.trim(),
+    body: document.getElementById('fBody').value.trim(),
+    priority: document.getElementById('fPrio').value,
+    start_date: document.getElementById('fStart').value,
+    due_date: document.getElementById('fDue').value,
+  })});
   closeModal();
   await loadTasks();
 }
@@ -548,21 +679,19 @@ function renderGantt() {
   const now = Date.now() / 1000;
   const day = 86400;
 
-  // Sort by priority then created_at
   const sorted = [...allTasks].sort((a,b) => {
-    const pa = typeof a.priority === 'number' ? a.priority : PRIO_VALUES[a.priority] || 2;
-    const pb = typeof b.priority === 'number' ? b.priority : PRIO_VALUES[b.priority] || 2;
+    const pa = typeof a.priority === 'number' ? a.priority : ({hoch:1,mittel:2,niedrig:3}[a.priority]||2);
+    const pb = typeof b.priority === 'number' ? b.priority : ({hoch:1,mittel:2,niedrig:3}[b.priority]||2);
     if (pa !== pb) return pa - pb;
     return (a.created_at||0) - (b.created_at||0);
   });
 
-  // Calculate start and end timestamps
   const tasks = sorted.map(t => {
+    const prioVal = typeof t.priority === 'number' ? t.priority : ({hoch:1,mittel:2,niedrig:3}[t.priority]||2);
     const start = t.started_at || t.created_at || now;
     let end = t.completed_at || now;
-    // If not completed, estimate end from now + priority-based duration
     if (!t.completed_at && t.status !== 'completed') {
-      end = now + (PRIO_VALUES[PRIO_LABEL(t.priority)] === 1 ? 7*day : PRIO_VALUES[PRIO_LABEL(t.priority)] === 2 ? 14*day : 30*day);
+      end = now + (prioVal === 1 ? 7*day : prioVal === 2 ? 14*day : 30*day);
     }
     return {...t, _start: start, _end: end};
   });
@@ -573,30 +702,31 @@ function renderGantt() {
 
   function pct(val) { return Math.max(2, ((val - minT) / range) * 100); }
 
-  let html = '<table class="gantt-table"><thead><tr><th>Projekt</th><th>Prio</th><th>Status</th><th>Start</th><th>Ende</th></tr></thead><tbody>';
+  // Table
+  let html = '<table class="gantt-table"><thead><tr><th>Projekt</th><th>Prio</th><th>Status</th><th>Start</th><th>Ziel</th></tr></thead><tbody>';
   tasks.forEach(t => {
     const prio = PRIO_LABEL(t.priority);
-    const pctDone = t.status === 'completed' ? 100 : t.status === 'running' ? 60 : t.status === 'blocked' ? 5 : 10;
     html += `<tr>
       <td><strong>${escHtml(t.title)}</strong></td>
       <td><span style="color:${PRIO_C[prio]};font-weight:600">${prio}</span></td>
       <td>${COL_NAMES[t.status]||t.status}</td>
-      <td class="gantt-date">${t._start ? fmtDate(t._start) : '—'}</td>
-      <td class="gantt-date">${t.completed_at ? fmtDate(t.completed_at) : (t.status==='completed'?'—':'offen')}</td>
+      <td class="gantt-date">${t.started_at ? tsToDate(t.started_at) : (t.created_at ? tsToDate(t.created_at) : '—')}</td>
+      <td class="gantt-date">${t.completed_at ? tsToDate(t.completed_at) : (t.status==='completed' ? '—' : 'offen')}</td>
     </tr>`;
   });
   html += '</tbody></table>';
 
-  // Timeline view
+  // Timeline
   html += '<div class="gantt-timeline"><div class="tl-label">📈 Zeitverlauf</div>';
   tasks.forEach(t => {
     const prio = PRIO_LABEL(t.priority);
     const left = pct(t._start);
     const width = Math.max(3, pct(t._end) - left);
+    const opacity = t.status === 'completed' ? '0.5' : '1';
     html += `<div class="timeline-row">
       <div class="timeline-label" title="${escHtml(t.title)}">${escHtml(t.title)}</div>
       <div class="timeline-track">
-        <div class="timeline-fill" style="left:${left}%;width:${width}%;background:${PRIO_C[prio]};opacity:${t.status==='completed'?'0.6':'1'}"></div>
+        <div class="timeline-fill" style="left:${left}%;width:${width}%;background:${PRIO_C[prio]};opacity:${opacity}"></div>
         <div class="timeline-text" style="left:${left}%;width:${width}%">${escHtml(t.title)}</div>
       </div>
     </div>`;
@@ -605,7 +735,7 @@ function renderGantt() {
   // Today marker
   const todayPct = pct(now);
   html += `<div style="position:relative;height:0;margin-top:-4px">
-    <div style="position:absolute;left:${todayPct}%;top:0;width:2px;height:${tasks.length*28+12}px;background:#DD3221;z-index:2" title="Heute"></div>
+    <div style="position:absolute;left:${todayPct}%;top:0;width:2px;height:${tasks.length*28+12}px;background:#DD3221;z-index:2"></div>
     <div style="position:absolute;left:${todayPct}%;top:-2px;font-size:10px;color:#DD3221;font-weight:600;transform:translateX(-50%)">▼ Heute</div>
   </div>`;
 
@@ -613,18 +743,60 @@ function renderGantt() {
   wrap.innerHTML = html;
 }
 
-function fmtDate(ts) {
-  const d = new Date((typeof ts === 'number' ? ts : parseInt(ts)) * 1000);
-  return d.toLocaleDateString('de-DE', {day:'2-digit',month:'2-digit',year:'2-digit'});
+// ── Brainstorm ──
+async function submitBrainstorm() {
+  const content = document.getElementById('bsInput').value.trim();
+  if (!content) return;
+  const project = document.getElementById('bsProject').value.trim();
+  await api('/api/brainstorm', {method:'POST', body:JSON.stringify({content, project})});
+  document.getElementById('bsInput').value = '';
+  document.getElementById('bsProject').value = '';
+  await loadTasks();
+}
+
+function renderBrainstorm() {
+  const list = document.getElementById('bsList');
+  if (!allBs.length) {
+    list.innerHTML = '<div class="empty-state">Noch keine Brainstorm-Einträge. Schreib oben deine Gedanken rein!</div>';
+    return;
+  }
+
+  // Update project datalist
+  const projects = [...new Set(allBs.map(e => e.project).filter(Boolean))];
+  document.getElementById('projectList').innerHTML = projects.map(p => `<option value="${escHtml(p)}">`).join('');
+
+  list.innerHTML = allBs.map(e => {
+    const date = e.created_at ? new Date(e.created_at * 1000).toLocaleString('de-DE') : '';
+    return `<div class="bstorm-entry">
+      <div class="bstorm-content">${escHtml(e.content)}</div>
+      <div class="bstorm-meta">
+        ${e.project ? `<span class="bstorm-project">${escHtml(e.project)}</span>` : ''}
+        <span>${date}</span>
+        <span style="color:${e.processed ? '#059669' : '#f59e0b'};font-weight:600">${e.processed ? '✅ verarbeitet' : '🟡 offen'}</span>
+      </div>
+      <div class="bstorm-actions">
+        <button class="btn btn-ghost btn-sm" onclick="deleteBrainstorm(${e.id})">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function deleteBrainstorm(id) {
+  if (!confirm('Eintrag löschen?')) return;
+  await api('/api/brainstorm/'+id, {method:'DELETE'});
+  await loadTasks();
 }
 
 // ── Tabs ──
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.querySelector(`.tab[onclick*="'${name}'"]`)?.classList.add('active');
-  document.getElementById('panel-' + name)?.classList.add('active');
+  const tab = document.querySelector(`.tab[onclick*="'${name}'"]`);
+  if (tab) tab.classList.add('active');
+  const panel = document.getElementById('panel-' + name);
+  if (panel) panel.classList.add('active');
   if (name === 'gantt') renderGantt();
+  if (name === 'brainstorm') renderBrainstorm();
 }
 
 // ── Init ──
@@ -638,9 +810,9 @@ loadTasks();
 
 if __name__ == "__main__":
     server = HTTPServer((HOST, PORT), KanbanHandler)
-    print(f"✅ Kanban + Gantt Server: http://{HOST}:{PORT}")
-    print(f"   Dashboard:            http://{HOST}:{PORT}/")
-    print(f"   API:                  http://{HOST}:{PORT}/api/tasks")
+    print(f"✅ Kanban + Gantt + Brainstorming: http://{HOST}:{PORT}")
+    print(f"   Dashboard:                      http://{HOST}:{PORT}/")
+    print(f"   API:                            http://{HOST}:{PORT}/api/tasks")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

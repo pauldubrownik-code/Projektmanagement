@@ -409,20 +409,7 @@ h1 span{color:#007FA7;font-weight:400}
 .timeline-fill{position:absolute;top:0;left:0;height:100%;border-radius:4px;min-width:4px;transition:width .5s}
 .timeline-text{position:absolute;top:0;left:4px;height:100%;display:flex;align-items:center;font-size:10px;color:#fff;font-weight:600;white-space:nowrap}
 
-/* Brainstorming */
-.brainstorm-panel{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.brainstorm-input{background:#fff;border-radius:10px;padding:16px}
-.brainstorm-input textarea{width:100%;min-height:150px;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit;resize:vertical}
-.brainstorm-input .meta-row{display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap}
-.brainstorm-input .meta-row input{flex:1;min-width:120px;padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px}
-.brainstorm-list{background:#fff;border-radius:10px;padding:16px;max-height:70vh;overflow-y:auto}
-.bstorm-entry{padding:10px 0;border-bottom:1px solid #f0f0f0}
-.bstorm-entry:last-child{border-bottom:none}
-.bstorm-content{font-size:13px;color:#333;margin-bottom:4px;white-space:pre-wrap}
-.bstorm-meta{font-size:10px;color:#999;display:flex;gap:8px;align-items:center}
-.bstorm-project{display:inline-block;background:#e5e7eb;border-radius:4px;padding:1px 6px;font-size:10px;color:#555}
-.bstorm-actions{display:flex;gap:4px;margin-top:4px}
-.bstorm-actions button{font-size:10px;padding:2px 8px}
+/* Misc */
 
 /* Pomodoro */
 .pomo-fab{position:fixed;bottom:24px;right:24px;width:56px;height:56px;border-radius:50%;background:#7C3AED;color:#fff;border:none;cursor:pointer;font-size:24px;box-shadow:0 4px 16px rgba(124,58,237,.4);z-index:900;transition:.2s}
@@ -459,7 +446,6 @@ h1 span{color:#007FA7;font-weight:400}
 <div class="tabs">
   <button class="tab active" onclick="switchTab('kanban')">📋 Kanban</button>
   <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
-  <button class="tab" onclick="switchTab('brainstorm')">💡 Brainstorming</button>
   <button class="tab" onclick="switchTab('overview')">📊 Übersicht</button>
   <button class="tab" onclick="switchTab('calendar')">📅 Kalender</button>
 </div>
@@ -485,26 +471,6 @@ h1 span{color:#007FA7;font-weight:400}
   <div id="ganttWrap" class="gantt"><div class="loading"><span class="spinner"></span>Lade …</div></div>
 </div>
 
-<div id="panel-brainstorm" class="panel">
-  <div class="brainstorm-panel">
-    <div class="brainstorm-input">
-      <label style="font-weight:600;font-size:14px;color:#002D69">💡 Gedanken reinschmeißen</label>
-      <textarea id="bsInput" placeholder="Was beschäftigt dich? Ideen, To-dos, Gedankenfetzen …"></textarea>
-      <div class="meta-row">
-        <input id="bsProject" placeholder="Projekt (optional, z.B. Jessi, NGD, EnnAIgram)" list="projectList">
-        <datalist id="projectList"></datalist>
-        <button class="btn btn-success btn-sm" onclick="submitBrainstorm()">Abschicken</button>
-      </div>
-      <div style="margin-top:8px;font-size:11px;color:#888">
-        <em>Ich mach daraus Kanban-Karten – sag einfach Bescheid wenn du bereit bist.</em>
-      </div>
-    </div>
-    <div class="brainstorm-list" id="bsList">
-      <div class="loading"><span class="spinner"></span>Lade …</div>
-    </div>
-  </div>
-</div>
-
 <div id="panel-overview" class="panel">
   <div class="toolbar">
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
@@ -514,11 +480,15 @@ h1 span{color:#007FA7;font-weight:400}
 
 <div id="panel-calendar" class="panel">
   <div class="toolbar">
-    <button class="btn btn-ghost" onclick="prevWeek()">◀</button>
-    <span id="calWeekLabel" style="font-size:14px;font-weight:600;color:#002D69;min-width:200px;text-align:center"></span>
-    <button class="btn btn-ghost" onclick="nextWeek()">▶</button>
-    <button class="btn btn-ghost" onclick="todayWeek()">Heute</button>
+    <button class="btn btn-ghost" onclick="calNav(-1)">◀</button>
+    <span id="calLabel" style="font-size:14px;font-weight:600;color:#002D69;min-width:240px;text-align:center"></span>
+    <button class="btn btn-ghost" onclick="calNav(1)">▶</button>
+    <button class="btn btn-ghost" onclick="calToday()">Heute</button>
     <button class="btn btn-ghost" onclick="loadTasks()">🔄</button>
+    <span style="flex:1"></span>
+    <button class="btn btn-sm cal-vw" data-vw="week" style="background:#002D69;color:#fff">Woche</button>
+    <button class="btn btn-sm cal-vw" data-vw="month">Monat</button>
+    <button class="btn btn-sm cal-vw" data-vw="year">Jahr</button>
   </div>
   <div id="calendarWrap" style="background:#fff;border-radius:10px;padding:16px;overflow-x:auto">
     <div class="loading"><span class="spinner"></span>Lade …</div>
@@ -557,7 +527,6 @@ h1 span{color:#007FA7;font-weight:400}
 <script>
 // ── State ──
 let allTasks = [];
-let allBs = [];
 
 // ── Pomodoro State ──
 let pomoState = 'idle'; // idle | running | paused | break
@@ -587,14 +556,10 @@ async function api(path, opts={}) {
 async function loadTasks() {
   document.getElementById('statusLine').textContent = 'Lade …';
   try {
-    const [td, bd] = await Promise.all([
-      api('/api/tasks'),
-      api('/api/brainstorm')
-    ]);
+    const td = await api('/api/tasks');
     allTasks = td.tasks || [];
-    allBs = bd.entries || [];
     document.getElementById('statusLine').textContent =
-      allTasks.length + ' Aufgaben · ' + allBs.length + ' Brainstorms · ' + new Date().toLocaleTimeString('de-DE');
+      allTasks.length + ' Aufgaben · ' + new Date().toLocaleTimeString('de-DE');
 
     // Update project filters
     const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
@@ -610,7 +575,6 @@ async function loadTasks() {
 
     renderKanban();
     renderGantt();
-    renderBrainstorm();
     renderOverview();
     renderCalendar();
   } catch(e) {
@@ -954,47 +918,6 @@ function renderGantt() {
   wrap.innerHTML = html;
 }
 
-// ── Brainstorm ──
-async function submitBrainstorm() {
-  const content = document.getElementById('bsInput').value.trim();
-  if (!content) return;
-  const project = document.getElementById('bsProject').value.trim();
-  await api('/api/brainstorm', {method:'POST', body:JSON.stringify({content, project})});
-  document.getElementById('bsInput').value = '';
-  document.getElementById('bsProject').value = '';
-  await loadTasks();
-}
-
-function renderBrainstorm() {
-  const list = document.getElementById('bsList');
-  if (!allBs.length) {
-    list.innerHTML = '<div class="empty-state">Noch keine Brainstorm-Einträge. Schreib oben deine Gedanken rein!</div>';
-    return;
-  }
-  const projects = [...new Set(allBs.map(e => e.project).filter(Boolean))];
-  document.getElementById('projectList').innerHTML = projects.map(p => `<option value="${escHtml(p)}">`).join('');
-  list.innerHTML = allBs.map(e => {
-    const date = e.created_at ? new Date(e.created_at * 1000).toLocaleString('de-DE') : '';
-    return `<div class="bstorm-entry">
-      <div class="bstorm-content">${escHtml(e.content)}</div>
-      <div class="bstorm-meta">
-        ${e.project ? `<span class="bstorm-project">${escHtml(e.project)}</span>` : ''}
-        <span>${date}</span>
-        <span style="color:${e.processed ? '#059669' : '#f59e0b'};font-weight:600">${e.processed ? '✅ verarbeitet' : '🟡 offen'}</span>
-      </div>
-      <div class="bstorm-actions">
-        <button class="btn btn-ghost btn-sm" onclick="deleteBrainstorm(${e.id})">🗑</button>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-async function deleteBrainstorm(id) {
-  if (!confirm('Eintrag löschen?')) return;
-  await api('/api/brainstorm/'+id, {method:'DELETE'});
-  await loadTasks();
-}
-
 // ── Pomodoro ──
 function togglePomo() {
   const overlay = document.getElementById('pomoOverlay');
@@ -1157,79 +1080,150 @@ function renderOverview() {
 function _fmtM(m) { if (!m||m<=0)return'0min'; if(m>=60)return Math.floor(m/60)+'h '+(m%60?m%60+'min':''); return m+'min'; }
 
 // ── Calendar View ──
-let calWeekOffset = 0;
-function getWeekStart(offset) {
-  const now = new Date();
-  const day = now.getDay();
-  const diff = now.getDate() - day + (day === 0 ? -6 : 1) + offset * 7;
-  const m = new Date(now.setDate(diff));
-  m.setHours(0,0,0,0);
-  return m;
+let calOffset = 0;
+let calView = 'week';
+function calSetView(v) {
+  calView = v;
+  document.querySelectorAll('.cal-vw').forEach(b => {
+    b.style.background = b.dataset.vw === v ? '#002D69' : '#e5e7eb';
+    b.style.color = b.dataset.vw === v ? '#fff' : '#666';
+  });
+  renderCalendar();
 }
+function calNav(d) {
+  if (calView === 'month') calOffset += d;
+  else if (calView === 'year') calOffset += d;
+  else calOffset += d;
+  renderCalendar();
+}
+function calToday() { calOffset = 0; renderCalendar(); }
+
 function renderCalendar() {
   const wrap = document.getElementById('calendarWrap');
-  const start = getWeekStart(calWeekOffset);
-  const days = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(start);
-    d.setDate(d.getDate() + i);
-    days.push(d);
-  }
-  const fmt = d => d.toLocaleDateString('de-DE', {weekday:'short', day:'2-digit', month:'2-digit'});
-  const isToday = d => {
-    const t = new Date();
-    return d.getFullYear()===t.getFullYear() && d.getMonth()===t.getMonth() && d.getDate()===t.getDate();
-  };
-  document.getElementById('calWeekLabel').textContent =
-    fmt(days[0]) + ' – ' + fmt(days[6]);
+  if (calView === 'week') return renderCalWeek(wrap);
+  if (calView === 'month') return renderCalMonth(wrap);
+  renderCalYear(wrap);
+}
 
-  // Group tasks by day
+function renderCalWeek(wrap) {
+  const now = new Date();
+  const day = now.getDay();
+  const diff = now.getDate() - day + (day === 0 ? -6 : 1) + calOffset * 7;
+  const start = new Date(now.setDate(diff)); start.setHours(0,0,0,0);
+  const days = Array.from({length:7}, (_,i) => { const d=new Date(start); d.setDate(d.getDate()+i); return d; });
+  const fmt = d => d.toLocaleDateString('de-DE', {weekday:'short', day:'2-digit', month:'2-digit'});
+  const isToday = d => {const t=new Date(); return d.getFullYear()===t.getFullYear()&&d.getMonth()===t.getMonth()&&d.getDate()===t.getDate();};
+  document.getElementById('calLabel').textContent = fmt(days[0]) + ' – ' + fmt(days[6]);
   const dayTs = days.map(d => Math.floor(d.getTime()/1000));
   const nextDayTs = days.map(d => Math.floor(new Date(d.getFullYear(),d.getMonth(),d.getDate()+1).getTime()/1000));
-  const byDay = days.map(() => []);
-
+  const byDay = days.map(()=>[]);
   allTasks.forEach(t => {
-    const startTs = t.started_at || t.created_at;
-    const endTs = t.completed_at || startTs + 86400*14;
-    if (!startTs) return;
-    for (let i = 0; i < days.length; i++) {
-      if (startTs < nextDayTs[i] && endTs >= dayTs[i]) {
-        byDay[i].push(t);
-      }
-    }
+    const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+    if (!s) return;
+    for (let i=0;i<7;i++) if (s<nextDayTs[i]&&e>=dayTs[i]) byDay[i].push(t);
   });
-
   const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
-  let html = '<table style="width:100%;border-collapse:collapse;table-layout:fixed;min-width:700px">'
-    + '<thead><tr>';
+  let h = '<table style="width:100%;border-collapse:collapse;table-layout:fixed;min-width:700px"><thead><tr>';
   days.forEach((d,i) => {
-    const today = isToday(d) ? ' style="background:#002D69;color:#fff;border-radius:6px 6px 0 0"' : '';
-    html += '<th'+today+' style="padding:8px 6px;font-size:12px;text-align:center;font-weight:600">'+fmt(d)+'</th>';
+    const t = isToday(d) ? ' style="background:#002D69;color:#fff;border-radius:6px 6px 0 0"' : '';
+    h += '<th'+t+' style="padding:8px 6px;font-size:12px;text-align:center;font-weight:600">'+fmt(d)+'</th>';
   });
-  html += '</tr></thead><tbody><tr>';
+  h += '</tr></thead><tbody><tr>';
   days.forEach((d,i) => {
-    const today = isToday(d) ? ' style="background:#f0f4ff"' : '';
-    html += '<td'+today+' style="vertical-align:top;padding:4px;border:1px solid #e5e7eb;height:120px;width:14.28%">';
-    if (byDay[i].length) {
-      byDay[i].forEach(t => {
-        const prio = PRIO_LABEL(t.priority);
-        html += '<div style="background:'+(colors[prio]||'#999')+';color:#fff;border-radius:4px;padding:2px 4px;margin-bottom:2px;font-size:10px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title)+'</div>';
-      });
-    }
-    html += '</td>';
+    const t = isToday(d) ? ' style="background:#f0f4ff"' : '';
+    h += '<td'+t+' style="vertical-align:top;padding:4px;border:1px solid #e5e7eb;height:120px;width:14.28%">';
+    if (byDay[i].length) byDay[i].forEach(t => {
+      const p = PRIO_LABEL(t.priority);
+      h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:4px;padding:2px 4px;margin-bottom:2px;font-size:10px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title)+'</div>';
+    });
+    h += '</td>';
   });
-  html += '</tr></tbody></table>';
-  html += '<div style="margin-top:8px;font-size:11px;color:#888;display:flex;gap:12px;flex-wrap:wrap">';
-  Object.entries(colors).forEach(([p,c]) => {
-    const cnt = allTasks.filter(t => PRIO_LABEL(t.priority)===p).length;
-    html += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+c+';margin-right:4px;vertical-align:middle"></span>'+p+' ('+cnt+')</span>';
-  });
-  html += '</div>';
-  wrap.innerHTML = html;
+  h += '</tr></tbody></table>';
+  h += '<div style="margin-top:8px;font-size:11px;color:#888;display:flex;gap:12px;flex-wrap:wrap">';
+  Object.entries(colors).forEach(([p,c]) => h += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+c+';margin-right:4px;vertical-align:middle"></span>'+p+'</span>');
+  h += '</div>';
+  wrap.innerHTML = h;
 }
-function prevWeek() { calWeekOffset--; renderCalendar(); }
-function nextWeek() { calWeekOffset++; renderCalendar(); }
-function todayWeek() { calWeekOffset=0; renderCalendar(); }
+
+function renderCalMonth(wrap) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + calOffset;
+  const first = new Date(year, month, 1);
+  const last = new Date(year, month + 1, 0);
+  const startDay = first.getDay(); // 0=Sun
+  const daysInMonth = last.getDate();
+  const monthLabel = first.toLocaleDateString('de-DE', {month:'long', year:'numeric'});
+  document.getElementById('calLabel').textContent = monthLabel;
+  const dayLabels = ['Mo','Di','Mi','Do','Fr','Sa','So'];
+  let h = '<table style="width:100%;border-collapse:collapse;table-layout:fixed"><thead><tr>';
+  dayLabels.forEach(d => h += '<th style="padding:6px;font-size:11px;text-align:center;color:#666">'+d+'</th>');
+  h += '</tr></thead><tbody>';
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const tNow = Math.floor(Date.now()/1000);
+  let day = 1;
+  for (let row = 0; row < 6; row++) {
+    if (day > daysInMonth) break;
+    h += '<tr>';
+    for (let col = 0; col < 7; col++) {
+      const cellDay = row === 0 && col < ((startDay+6)%7) ? 0 : day++;
+      const d = cellDay ? new Date(year, month, cellDay) : null;
+      const isT = d && d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()===now.getDate();
+      h += '<td style="vertical-align:top;padding:2px;border:1px solid #e5e7eb;height:80px;width:14.28%;'+(isT?'background:#f0f4ff':'')+'">';
+      if (d) {
+        h += '<div style="font-size:10px;font-weight:600;color:'+(isT?'#002D69':'#333')+';padding:1px 2px;margin-bottom:2px">'+cellDay+'</div>';
+        const dayStart = Math.floor(d.getTime()/1000);
+        const dayEnd = dayStart + 86400;
+        const tasks = allTasks.filter(t => {
+          const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+          return s && s < dayEnd && e >= dayStart;
+        }).slice(0, 3);
+        tasks.forEach(t => {
+          const p = PRIO_LABEL(t.priority);
+          h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:2px;padding:1px 2px;margin-bottom:1px;font-size:8px;cursor:pointer;overflow:hidden;white-space:nowrap" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title).substring(0,15)+'</div>';
+        });
+        if (tasks.length > 3) h += '<div style="font-size:8px;color:#999">+'+ (allTasks.filter(t => {
+          const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+          return s && s < dayEnd && e >= dayStart;
+        }).length - 3) +' mehr</div>';
+      }
+      h += '</td>';
+    }
+    h += '</tr>';
+  }
+  h += '</tbody></table>';
+  wrap.innerHTML = h;
+}
+
+function renderCalYear(wrap) {
+  const now = new Date();
+  const year = now.getFullYear() + calOffset;
+  document.getElementById('calLabel').textContent = 'Jahr ' + year;
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  let h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
+  for (let m = 0; m < 12; m++) {
+    const first = new Date(year, m, 1);
+    const lastD = new Date(year, m + 1, 0).getDate();
+    const mName = first.toLocaleDateString('de-DE', {month:'short'});
+    const monthStart = Math.floor(first.getTime()/1000);
+    const monthEnd = monthStart + lastD * 86400;
+    const tasks = allTasks.filter(t => {
+      const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+      return s && s < monthEnd && e >= monthStart;
+    });
+    const byPrio = {hoch:0,mittel:0,niedrig:0};
+    tasks.forEach(t => { const p=PRIO_LABEL(t.priority); byPrio[p]=(byPrio[p]||0)+1; });
+    h += '<div style="background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+      + '<div style="font-size:13px;font-weight:600;color:#002D69;margin-bottom:6px">'+mName+'</div>'
+      + '<div style="font-size:11px;color:#666">'+tasks.length+' Aufgaben</div>';
+    Object.entries(byPrio).forEach(([p,c]) => {
+      if (c) h += '<div style="font-size:10px;color:'+(colors[p]||'#999')+'">'+p+': '+c+'</div>';
+    });
+    h += '</div>';
+  }
+  h += '</div>';
+  wrap.innerHTML = h;
+}
 
 // ── Tabs ──
 function switchTab(name) {
@@ -1240,7 +1234,6 @@ function switchTab(name) {
   const panel = document.getElementById('panel-' + name);
   if (panel) panel.classList.add('active');
   if (name === 'gantt') renderGantt();
-  if (name === 'brainstorm') renderBrainstorm();
   if (name === 'overview') renderOverview();
   if (name === 'calendar') renderCalendar();
 }

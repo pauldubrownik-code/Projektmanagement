@@ -1000,7 +1000,6 @@ function renderGantt() {
     if (!routines.length) {
       rWrap.innerHTML = '<div style="text-align:center;color:#aaa;padding:20px;font-size:13px">Keine Routinen angelegt</div>';
     } else {
-      const cats = [...new Set(routines.map(r => r.category).filter(Boolean))];
       let rh = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">';
       routines.forEach(r => {
         const freqLabels = {'daily':'täglich','weekly':'wöchentlich','biweekly':'14-tägig','monthly':'monatlich'};
@@ -1369,7 +1368,7 @@ function renderCalDay(wrap) {
         + '<div style="font-size:10px;color:#888;margin-top:2px;display:flex;gap:8px">'
         + '<span style="color:'+(colors[prio]||'#999')+';font-weight:600">'+prio+'</span>'
         + (t.project_id ? '<span>📁 '+escHtml(t.project_id)+'</span>' : '')
-        + '<span>'+COL_NAMES[t.status]||t.status+'</span>'
+        + '<span>'+(COL_NAMES[t.status]||t.status)+'</span>'
         + (t.estimated_minutes ? '<span>🕐 '+_fmtM(t.estimated_minutes)+'</span>' : '')
         + '</div></div>'
         + '</div>';
@@ -1382,7 +1381,23 @@ function renderCalDay(wrap) {
     h += '<h3 style="font-size:14px;color:#002D69;margin:16px 0 8px">🔄 Routinen</h3>'
       + '<div style="display:flex;flex-direction:column;gap:6px">';
     routines.forEach(r => {
-      if (r.freq !== 'daily') return;
+      // Show routines matching today
+      const isTodayRoutine = r.freq === 'daily' || (function() {
+        const dayEn = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+        const todayEn = dayEn[new Date().getDay()];
+        if (r.freq === 'weekly' && r.days && r.days.includes(todayEn)) return true;
+        if (r.freq === 'biweekly' && r.days && r.days.includes(todayEn)) {
+          // Every other week: use even/odd week check
+          const weekNum = Math.floor((new Date() - new Date(new Date().getFullYear(),0,1)) / 604800000);
+          return weekNum % 2 === 0;
+        }
+        if (r.freq === 'monthly' && r.days) {
+          const dayNum = parseInt(r.days);
+          return new Date().getDate() === dayNum;
+        }
+        return false;
+      })();
+      if (!isTodayRoutine) return;
       h += '<div class="cal-day-routine" data-rid="'+r.id+'" style="border-left:4px solid '+(r.done_today?'#059669':'#e5e7eb')+';background:#fff;border-radius:6px;padding:10px 12px;cursor:pointer;display:flex;align-items:center;gap:10px;box-shadow:0 1px 2px rgba(0,0,0,.06)">'
         + '<div style="width:24px;height:24px;border-radius:50%;background:'+(r.done_today?'#059669':'#e5e7eb')+';color:'+(r.done_today?'#fff':'#999')+';display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0">'+(r.done_today?'✓':'')+'</div>'
         + '<div style="font-size:12px;color:'+(r.done_today?'#999':'#1a1a2e')+';'+(r.done_today?'text-decoration:line-through':'')+'">'+escHtml(r.name)+'</div>'

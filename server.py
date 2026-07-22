@@ -1082,6 +1082,79 @@ function renderOverview() {
       + '</td></tr></table></div>';
   });
   html += '</div>';
+
+  // --- Charts: Zeitverteilung ---
+  const now = new Date();
+  const dayMs = 86400000;
+  const projColors = ['#002D69','#DD3221','#f59e0b','#059669','#7C3AED','#DC2626','#6b7280','#007FA7','#84cc16','#ec4899'];
+
+  // 1) Pie: Geplante Zeit diese Woche nach Projekt
+  const weekStart = new Date(now); weekStart.setDate(now.getDate()-now.getDay()+1); weekStart.setHours(0,0,0,0);
+  const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate()+7);
+  const ws = Math.floor(weekStart.getTime()/1000);
+  const we = Math.floor(weekEnd.getTime()/1000);
+  const weekTasks = allTasks.filter(t => {
+    const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+    return s && s < we && e >= ws && (t.estimated_minutes||0) > 0;
+  });
+  const byProjWeek = {};
+  weekTasks.forEach(t => {
+    const p = t.project_id || 'Unsortiert';
+    byProjWeek[p] = (byProjWeek[p]||0) + (t.estimated_minutes||0);
+  });
+  const wpEntries = Object.entries(byProjWeek).sort((a,b) => b[1]-a[1]);
+  const wpTotal = wpEntries.reduce((s,[_,v]) => s+v, 0);
+  let pieHtml = '';
+  if (wpTotal > 0) {
+    let conic = wpEntries.map(([p,v],i) => {
+      const pct = v/wpTotal*100;
+      const angle = i===0 ? 0 : wpEntries.slice(0,i).reduce((s,[_,x]) => s + x/wpTotal*360, 0);
+      return projColors[i%projColors.length]+' '+angle+'deg '+(angle+v/wpTotal*360)+'deg';
+    }).join(', ');
+    pieHtml = '<div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap">'
+      + '<div style="width:120px;height:120px;border-radius:50%;background:conic-gradient('+conic+');flex-shrink:0"></div>'
+      + '<div style="font-size:12px">'
+      + wpEntries.map(([p,v],i) => '<div style="margin:2px 0"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+projColors[i%projColors.length]+';margin-right:6px;vertical-align:middle"></span>'+escHtml(p)+' <strong>'+_fmtM(v)+'</strong></div>').join('')
+      + '</div></div>';
+  } else {
+    pieHtml = '<div style="color:#aaa;font-size:13px;padding:10px">Keine geplanten Aufgaben diese Woche mit Datum</div>';
+  }
+
+  // 2) Bar Chart: Wöchentlicher Aufwand letzte 6 Wochen
+  let barHtml = '<div style="display:flex;align-items:end;gap:6px;height:120px;padding:10px 0">';
+  for (let w = 5; w >= 0; w--) {
+    const wStart = new Date(now); wStart.setDate(now.getDate()-now.getDay()+1 - w*7); wStart.setHours(0,0,0,0);
+    const wEnd = new Date(wStart); wEnd.setDate(wStart.getDate()+7);
+    const wst = Math.floor(wStart.getTime()/1000);
+    const wet = Math.floor(wEnd.getTime()/1000);
+    const wTasks = allTasks.filter(t => {
+      const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+      return s && s < wet && e >= wst && (t.estimated_minutes||0) > 0;
+    });
+    const wEst = wTasks.reduce((s,t) => s+(t.estimated_minutes||0), 0);
+    const maxH = 100;
+    const h = Math.min(maxH, wEst/60); // 1h = 1px roughly
+    barHtml += '<div style="flex:1;display:flex;flex-direction:column;align-items:center">'
+      + '<div style="width:100%;background:#002D69;border-radius:4px 4px 0 0;height:'+h+'px;min-height:'+(wEst>0?4:0)+'px;transition:height .3s"></div>'
+      + '<div style="font-size:9px;color:#666;margin-top:4px;text-align:center">'+wStart.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})+'</div>'
+      + '<div style="font-size:9px;color:#999">'+_fmtM(wEst)+'</div>'
+      + '</div>';
+  }
+  barHtml += '</div>';
+
+  // Charts section
+  html += '<div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+    + '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+    + '<h3 style="font-size:14px;color:#002D69;margin-bottom:12px">🥧 Geplante Zeit diese Woche</h3>'
+    + pieHtml
+    + '</div>'
+    + '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+    + '<h3 style="font-size:14px;color:#002D69;margin-bottom:12px">📊 Wöchentlicher Aufwand (6 Wochen)</h3>'
+    + barHtml
+    + '</div>'
+    + '</div>';
+
+  // Totals bar
   const totalDone = allTasks.filter(t => t.status==='completed').length;
   html += '<div style="margin-top:16px;background:#fff;border-radius:10px;padding:14px 16px;display:flex;gap:24px;flex-wrap:wrap;font-size:13px">'
     + '<span>📊 <strong>'+totalTasks+'</strong> Aufgaben</span>'

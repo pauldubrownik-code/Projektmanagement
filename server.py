@@ -460,6 +460,7 @@ h1 span{color:#007FA7;font-weight:400}
   <button class="tab active" onclick="switchTab('kanban')">📋 Kanban</button>
   <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
   <button class="tab" onclick="switchTab('brainstorm')">💡 Brainstorming</button>
+  <button class="tab" onclick="switchTab('overview')">📊 Übersicht</button>
 </div>
 
 <div id="panel-kanban" class="panel active">
@@ -475,6 +476,9 @@ h1 span{color:#007FA7;font-weight:400}
 
 <div id="panel-gantt" class="panel">
   <div class="toolbar">
+    <select id="ganttProjectFilter" onchange="renderGantt()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="">📁 Alle Projekte</option>
+    </select>
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
   <div id="ganttWrap" class="gantt"><div class="loading"><span class="spinner"></span>Lade …</div></div>
@@ -498,6 +502,13 @@ h1 span{color:#007FA7;font-weight:400}
       <div class="loading"><span class="spinner"></span>Lade …</div>
     </div>
   </div>
+</div>
+
+<div id="panel-overview" class="panel">
+  <div class="toolbar">
+    <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
+  </div>
+  <div id="overviewWrap"><div class="loading"><span class="spinner"></span>Lade …</div></div>
 </div>
 
 <!-- Modal -->
@@ -571,17 +582,22 @@ async function loadTasks() {
     document.getElementById('statusLine').textContent =
       allTasks.length + ' Aufgaben · ' + allBs.length + ' Brainstorms · ' + new Date().toLocaleTimeString('de-DE');
 
-    // Update project filter
+    // Update project filters
     const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
+    const opts = projs.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
     const filterSel = document.getElementById('projectFilter');
     const currentVal = filterSel.value;
-    filterSel.innerHTML = '<option value="">📁 Alle Projekte</option>'
-      + projs.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
+    filterSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
     filterSel.value = currentVal;
+    const ganttSel = document.getElementById('ganttProjectFilter');
+    const ganttVal = ganttSel.value;
+    ganttSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
+    ganttSel.value = ganttVal;
 
     renderKanban();
     renderGantt();
     renderBrainstorm();
+    renderOverview();
   } catch(e) {
     document.getElementById('statusLine').textContent = '⚠️ Fehler beim Laden';
     console.error(e);
@@ -616,6 +632,7 @@ function fmtMinutes(m) {
 // ── Kanban ──
 const COLS = ['backlog','ready','running','completed','blocked'];
 const COL_NAMES = {'backlog':'📋 Backlog','ready':'🟡 Bereit','running':'🟢 In Arbeit','completed':'✅ Erledigt','blocked':'🔴 Blockiert'};
+const COL_NAMES_SHORT = {'backlog':'Backlog','ready':'Bereit','running':'In Arbeit','completed':'Erledigt','blocked':'Blockiert'};
 const PRIO_C = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
 
 function renderKanban() {
@@ -662,7 +679,7 @@ function renderCard(t) {
       <span style="color:${PRIO_C[prio]||'#999'};font-weight:600">${prio}</span>
       ${projHtml}
       <select class="status-select" onchange="changeStatus('${t.id}',this.value)" onclick="event.stopPropagation()">
-        ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${s}</option>`).join('')}
+        ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${COL_NAMES_SHORT[s]||s}</option>`).join('')}
       </select>
     </div>
   </div>`;
@@ -710,11 +727,10 @@ function openCreateModal() {
           <option value="niedrig">🟢 Niedrig</option>
         </select>
       </div>
-      <div><label>📁 Projekt</label>
-        <input type="text" id="fProject" list="projectFilterList" placeholder="z.B. Jessi, NGD, EnnAIgram">
-        <datalist id="projectFilterList"></datalist>
-      </div>
     </div>
+    <label>📁 Projekt</label>
+    <input type="text" id="fProject" list="projectFilterList" placeholder="z.B. Jessi, NGD, EnnAIgram">
+    <datalist id="projectFilterList"></datalist>
     <label>Status</label>
     <select id="fStatus">
       <option value="backlog">📋 Backlog</option>
@@ -726,6 +742,10 @@ function openCreateModal() {
       <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
       <button class="btn btn-primary" onclick="createTask()">Erstellen</button>
     </div>`;
+  // Populate project datalist
+  const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
+  const dl = document.getElementById('projectFilterList');
+  if (dl) dl.innerHTML = projs.map(p => `<option value="${escHtml(p)}">`).join('');
   document.getElementById('modalOverlay').classList.add('show');
   setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
 }
@@ -753,6 +773,7 @@ async function editTask(id) {
   const t = allTasks.find(x => x.id === id);
   if (!t) return;
   const prio = PRIO_LABEL(t.priority);
+
   document.getElementById('modalTitle').textContent = '✏️ Aufgabe bearbeiten';
   document.getElementById('modalBody').innerHTML = `
     <label>Titel</label>
@@ -777,10 +798,10 @@ async function editTask(id) {
           <option value="niedrig" ${prio==='niedrig'?'selected':''}>🟢 Niedrig</option>
         </select>
       </div>
-      <div><label>📁 Projekt</label>
-        <input type="text" id="fProject" list="projectFilterList" value="${escHtml(t.project_id||'')}" placeholder="z.B. Jessi, NGD, EnnAIgram">
-      </div>
     </div>
+    <label>📁 Projekt</label>
+    <input type="text" id="fProject" list="projectFilterList" value="${escHtml(t.project_id||'')}" placeholder="z.B. Jessi, NGD, EnnAIgram">
+    <datalist id="projectFilterList"></datalist>
     <div class="row2">
       <div><label>Status</label>
         <select id="fStatus" onchange="changeStatus('${t.id}',this.value)">
@@ -796,6 +817,10 @@ async function editTask(id) {
       <button class="btn btn-danger" onclick="deleteTask('${t.id}')">🗑 Löschen</button>
       <button class="btn btn-primary" onclick="saveTask('${t.id}')">Speichern</button>
     </div>`;
+  // Populate project datalist
+  const projs2 = [...new Set(allTasks.map(x => x.project_id).filter(Boolean))].sort();
+  const dl2 = document.getElementById('projectFilterList');
+  if (dl2) dl2.innerHTML = projs2.map(p => `<option value="${escHtml(p)}">`).join('');
   document.getElementById('modalOverlay').classList.add('show');
   setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
 }
@@ -822,13 +847,15 @@ function closeModal() {
 // ── Gantt ──
 function renderGantt() {
   const wrap = document.getElementById('ganttWrap');
+  const filter = document.getElementById('ganttProjectFilter').value;
   if (!allTasks.length) {
     wrap.innerHTML = '<div class="empty-state">Keine Aufgaben vorhanden</div>';
     return;
   }
   const now = Date.now() / 1000;
   const day = 86400;
-  const sorted = [...allTasks].sort((a,b) => {
+  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
+  const sorted = [...filtered].sort((a,b) => {
     const pa = typeof a.priority === 'number' ? a.priority : ({hoch:1,mittel:2,niedrig:3}[a.priority]||2);
     const pb = typeof b.priority === 'number' ? b.priority : ({hoch:1,mittel:2,niedrig:3}[b.priority]||2);
     if (pa !== pb) return pa - pb;
@@ -1034,6 +1061,61 @@ document.addEventListener('click', () => {
   }
 }, {once: true});
 
+// ── Project Overview ──
+function renderOverview() {
+  const wrap = document.getElementById('overviewWrap');
+  if (!allTasks.length) {
+    wrap.innerHTML = '<div class="empty-state">Keine Aufgaben vorhanden</div>';
+    return;
+  }
+  const byProj = {};
+  allTasks.forEach(t => {
+    const p = t.project_id || '(ohne Projekt)';
+    if (!byProj[p]) byProj[p] = [];
+    byProj[p].push(t);
+  });
+  const projNames = Object.keys(byProj).sort();
+  const colors = {'backlog':'#e5e7eb','ready':'#f59e0b','running':'#059669','completed':'#002D69','blocked':'#DC2626'};
+  let totalEst = 0, totalBuf = 0, totalTasks = allTasks.length;
+  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">';
+  projNames.forEach(p => {
+    const tasks = byProj[p];
+    const count = tasks.length;
+    const est = tasks.reduce((s,t) => s + (t.estimated_minutes||0), 0);
+    const buf = tasks.reduce((s,t) => s + Math.round((t.estimated_minutes||0) * (t.buffer_percent||20) / 100), 0);
+    totalEst += est; totalBuf += buf;
+    const byStatus = {};
+    tasks.forEach(t => { byStatus[t.status] = (byStatus[t.status]||0) + 1; });
+    const starts = tasks.map(t => t.started_at||t.created_at).filter(Boolean).sort();
+    const ends = tasks.map(t => t.completed_at).filter(Boolean).sort();
+    const first = starts.length ? tsToDate(starts[0]) : '—';
+    const last = ends.length ? tsToDate(ends[ends.length-1]) : 'offen';
+    const pctDone = tasks.filter(t => t.status==='completed').length / count * 100;
+    html += '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      + '<h3 style="font-size:15px;color:#002D69;font-weight:600">📁 '+escHtml(p)+'</h3>'
+      + '<span style="font-size:12px;color:#888;font-weight:500">'+count+' Aufgaben</span></div>'
+      + '<div style="height:6px;background:#e5e7eb;border-radius:3px;margin-bottom:10px;overflow:hidden">'
+      + '<div style="height:100%;width:'+Math.round(pctDone)+'%;background:#059669;border-radius:3px;transition:width .5s"></div></div>'
+      + '<table style="width:100%;font-size:12px;border-collapse:collapse">'
+      + '<tr><td style="padding:2px 4px;color:#666">⏱ Aufwand</td><td style="padding:2px 4px;font-weight:600">'+_fmtM(est)+(buf?' + '+_fmtM(buf)+' Puffer':'')+'</td></tr>'
+      + '<tr><td style="padding:2px 4px;color:#666">📅 Start</td><td style="padding:2px 4px">'+first+'</td></tr>'
+      + '<tr><td style="padding:2px 4px;color:#666">🎯 Ende</td><td style="padding:2px 4px">'+last+'</td></tr>'
+      + '<tr><td style="padding:2px 4px;color:#666">📊 Status</td><td style="padding:2px 4px">'
+      + Object.entries(byStatus).map(([s,c]) => '<span style="display:inline-block;background:'+(colors[s]||'#999')+';color:'+(s==='backlog'?'#666':'#fff')+';border-radius:4px;padding:1px 6px;font-size:10px;margin:1px">'+(COL_NAMES_SHORT[s]||s)+' '+c+'</span>').join(' ')
+      + '</td></tr></table></div>';
+  });
+  html += '</div>';
+  const totalDone = allTasks.filter(t => t.status==='completed').length;
+  html += '<div style="margin-top:16px;background:#fff;border-radius:10px;padding:14px 16px;display:flex;gap:24px;flex-wrap:wrap;font-size:13px">'
+    + '<span>📊 <strong>'+totalTasks+'</strong> Aufgaben</span>'
+    + '<span>⏱ <strong>'+_fmtM(totalEst)+'</strong> geschätzt <span style="color:#888">(+ '+_fmtM(totalBuf)+' Puffer)</span></span>'
+    + '<span>✅ <strong>'+totalDone+'</strong> erledigt <span style="color:#888">('+(totalTasks?Math.round(totalDone/totalTasks*100):0)+'%)</span></span>'
+    + '</div>';
+  wrap.innerHTML = html;
+}
+function _fmtM(m) { if (!m||m<=0)return'0min'; if(m>=60)return Math.floor(m/60)+'h '+(m%60?m%60+'min':''); return m+'min'; }
+
 // ── Tabs ──
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1044,6 +1126,7 @@ function switchTab(name) {
   if (panel) panel.classList.add('active');
   if (name === 'gantt') renderGantt();
   if (name === 'brainstorm') renderBrainstorm();
+  if (name === 'overview') renderOverview();
 }
 
 // Restore title when timer done

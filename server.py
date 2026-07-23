@@ -22,6 +22,24 @@ PRIO_LABELS = {1: "hoch", 2: "mittel", 3: "niedrig"}
 PRIO_VALUES = {"hoch": 1, "mittel": 2, "niedrig": 3}
 STATUS_ORDER = ["backlog", "ready", "running", "completed", "blocked"]
 
+# Die DB wird auch vom Hermes-Agenten beschrieben; dessen Statuswerte
+# müssen auf die fünf Board-Spalten abgebildet werden, sonst fallen die
+# Karten im Frontend aus allen Spalten heraus.
+STATUS_ALIASES = {
+    "todo": "backlog", "open": "backlog", "new": "backlog",
+    "queued": "ready", "pending": "ready",
+    "in_progress": "running", "doing": "running", "active": "running", "started": "running",
+    "done": "completed", "finished": "completed", "closed": "completed",
+    "waiting": "blocked", "on_hold": "blocked", "paused": "blocked",
+}
+
+
+def normalize_status(raw):
+    s = str(raw or "").strip().lower()
+    if s in STATUS_ORDER:
+        return s
+    return STATUS_ALIASES.get(s, raw)
+
 
 def get_db():
     con = sqlite3.connect(str(KANBAN_DB))
@@ -63,6 +81,8 @@ def fetch_tasks():
         "completed_at, assignee, project_id FROM tasks ORDER BY priority, created_at"
     ).fetchall()
     tasks = [dict(r) for r in rows]
+    for t in tasks:
+        t["status"] = normalize_status(t["status"])
     # Add estimates
     est_rows = con.execute("SELECT * FROM task_estimates").fetchall()
     estimates = {r["task_id"]: dict(r) for r in est_rows}
@@ -661,10 +681,12 @@ function PRIO_LABEL(p) {
   if (['hoch','mittel','niedrig'].includes(p)) return p;
   return 'mittel';
 }
+// Escapt auch Anführungszeichen, damit Werte in HTML-Attributen
+// (z.B. Projektfilter-Optionen) nicht abgeschnitten werden.
 function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
+  return String(s || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 function tsToDate(ts) {
   if (!ts) return '';
@@ -686,12 +708,18 @@ const COL_NAMES = {'backlog':'📋 Backlog','ready':'🟡 Bereit','running':'�
 const COL_NAMES_SHORT = {'backlog':'Backlog','ready':'Bereit','running':'In Arbeit','completed':'Erledigt','blocked':'Blockiert'};
 const PRIO_C = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
 
+// Karten mit unbekanntem Status (z.B. von externen Writern in der DB)
+// dürfen nicht aus dem Board verschwinden — sie landen im Backlog.
+function kanbanCol(t) {
+  return COLS.includes(t.status) ? t.status : 'backlog';
+}
+
 function renderKanban() {
   const filter = document.getElementById('projectFilter').value;
   const kanban = document.getElementById('kanban');
   const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
   kanban.innerHTML = COLS.map(col => {
-    const items = filtered.filter(t => t.status === col);
+    const items = filtered.filter(t => kanbanCol(t) === col);
     return `<div class="column">
       <div class="col-header">
         <h3>${COL_NAMES[col]}</h3>
@@ -717,7 +745,7 @@ function renderCard(t) {
     ? `<div class="card-est">🕐 ${fmtMinutes(t.estimated_minutes)}${t.buffer_percent ? ' +'+t.buffer_percent+'% Puffer' : ''}</div>`
     : '';
   const projHtml = t.project_id ? `<span style="background:#e5e7eb;border-radius:3px;padding:1px 5px;font-size:9px;color:#555">📁 ${escHtml(t.project_id)}</span>` : '';
-  return `<div class="card prio-${prio}" onclick="editTask('${t.id}')">
+  return `<div class="card prio-${prio}" data-task-id="${t.id}" onclick="editTask('${t.id}')">
     <div class="card-actions" onclick="event.stopPropagation()">
       <button onclick="event.stopPropagation();startPomoForTask('${t.id}')" title="Fokus">🍅</button>
       <button onclick="deleteTask('${t.id}')" title="Löschen">🗑</button>
@@ -729,7 +757,8 @@ function renderCard(t) {
     <div class="card-meta">
       <span style="color:${PRIO_C[prio]||'#999'};font-weight:600">${prio}</span>
       ${projHtml}
-      <select class="status-select" onchange="changeStatus('${t.id}',this.value)" onclick="event.stopPropagation()">
+      <select class="status-select" autocomplete="off" onclick="event.stopPropagation()">
+        ${COLS.includes(t.status) ? '' : `<option value="" selected>⚠ ${escHtml(t.status||'—')}</option>`}
         ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${COL_NAMES_SHORT[s]||s}</option>`).join('')}
       </select>
     </div>
@@ -738,9 +767,26 @@ function renderCard(t) {
 
 // ── Status + Delete ──
 async function changeStatus(id, newStatus) {
-  await api('/api/tasks/'+id+'/status', {method:'POST', body:JSON.stringify({status:newStatus})});
-  await loadTasks();
+  if (!COLS.includes(newStatus)) return;
+  const t = allTasks.find(x => x.id === id);
+  if (t && t.status === newStatus) return;
+  try {
+    await api('/api/tasks/'+id+'/status', {method:'POST', body:JSON.stringify({status:newStatus})});
+  } finally {
+    await loadTasks();
+  }
 }
+
+// Delegierter Listener statt Inline-onchange: reagiert nur auf echte
+// Nutzer-Interaktion (isTrusted), nicht auf synthetische Events von
+// Extensions/Skripten.
+document.getElementById('kanban').addEventListener('change', (e) => {
+  if (!e.isTrusted) return;
+  const sel = e.target.closest('.status-select');
+  if (!sel) return;
+  const card = sel.closest('.card');
+  if (card && card.dataset.taskId) changeStatus(card.dataset.taskId, sel.value);
+});
 async function deleteTask(id) {
   if (!confirm('Aufgabe löschen?')) return;
   await api('/api/tasks/'+id, {method:'DELETE'});
@@ -871,7 +917,8 @@ async function editTask(id) {
     <input type="text" id="fProjectNew" style="display:none" placeholder="Neues Projekt …">
     <div class="row2">
       <div><label>Status</label>
-        <select id="fStatus" onchange="changeStatus('${t.id}',this.value)">
+        <select id="fStatus" autocomplete="off">
+          ${COLS.includes(t.status) ? '' : `<option value="" selected>⚠ ${escHtml(t.status||'—')}</option>`}
           ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${COL_NAMES[s]}</option>`).join('')}
         </select>
       </div>
@@ -884,6 +931,9 @@ async function editTask(id) {
       <button class="btn btn-danger" onclick="deleteTask('${t.id}')">🗑 Löschen</button>
       <button class="btn btn-primary" onclick="saveTask('${t.id}')">Speichern</button>
     </div>`;
+  document.getElementById('fStatus').addEventListener('change', (e) => {
+    if (e.isTrusted) changeStatus(t.id, e.target.value);
+  });
   // Populate project select and set current value
   const projs2 = [...new Set(allTasks.map(x => x.project_id).filter(Boolean))].sort();
   const projSel2 = document.getElementById('fProject');

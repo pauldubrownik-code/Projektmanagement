@@ -157,6 +157,20 @@ def ensure_tables():
 
 ensure_tables()
 
+# ── Sync-Status Log beim Start ──
+if GITHUB_TOKEN:
+    token_preview = GITHUB_TOKEN[:8] + "…" if len(GITHUB_TOKEN) > 8 else "?"
+    print(f"[DB-SYNC] GITHUB_TOKEN vorhanden ({token_preview}), Sync aktiviert", flush=True)
+    import subprocess
+    r = subprocess.run(["git", "remote", "get-url", GIT_REMOTE],
+                       capture_output=True, text=True, cwd=str(BASE))
+    if r.returncode == 0:
+        print(f"[DB-SYNC] Remote: {r.stdout.strip()}", flush=True)
+    else:
+        print(f"[DB-SYNC] Kein Git-Repository gefunden: {r.stderr.strip()}", flush=True)
+else:
+    print("[DB-SYNC] GITHUB_TOKEN NICHT gesetzt — Sync deaktiviert!", flush=True)
+
 
 def fetch_tasks():
     con = get_db()

@@ -118,11 +118,19 @@ def ensure_tables():
             procedure TEXT DEFAULT ''
         )
     """)
-    # Spalte für bestehende DBs nachrüsten
+    # Spalten für bestehende DBs nachrüsten
+    for col in ["procedure", "project_ids"]:
+        try:
+            con.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # Spalte existiert bereits
+    # Migration: project_id → project_ids JSON-Array
     try:
-        con.execute("ALTER TABLE tasks ADD COLUMN procedure TEXT DEFAULT ''")
+        rows = con.execute("SELECT id, project_id FROM tasks WHERE project_id IS NOT NULL AND project_id != '' AND (project_ids IS NULL OR project_ids = '' OR project_ids = '[]')").fetchall()
+        for r in rows:
+            con.execute("UPDATE tasks SET project_ids=? WHERE id=?", (json.dumps([r["project_id"]]), r["id"]))
     except sqlite3.OperationalError:
-        pass  # Spalte existiert bereits
+        pass
     con.execute("""
         CREATE TABLE IF NOT EXISTS routines (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,7 +246,7 @@ def fetch_tasks():
     con = get_db()
     rows = con.execute(
         "SELECT id, title, body, procedure, status, priority, created_at, started_at, "
-        "completed_at, assignee, project_id FROM tasks ORDER BY priority, created_at"
+        "completed_at, assignee, project_ids FROM tasks ORDER BY priority, created_at"
     ).fetchall()
     tasks = [dict(r) for r in rows]
     for t in tasks:
@@ -385,7 +393,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 con = get_db()
                 row = con.execute(
                     "SELECT id, title, body, procedure, status, priority, created_at, started_at, "
-                    "completed_at, assignee, project_id FROM tasks WHERE id=?", (task_id,)
+                    "completed_at, assignee, project_ids FROM tasks WHERE id=?", (task_id,)
                 ).fetchone()
                 con.close()
                 t = dict(row) if row else {"error": "not found"}
@@ -421,13 +429,16 @@ class KanbanHandler(SimpleHTTPRequestHandler):
 
             task_id = f"t_{uuid.uuid4().hex[:8]}"
             now = int(time.time())
-            project = body.get("project", "").strip()
+            projects = body.get("projects", [])
+            if isinstance(projects, str):
+                projects = [p.strip() for p in projects.split(",") if p.strip()]
+            project_ids_str = json.dumps(projects)
             proc = body.get("procedure", "").strip()
             con = get_db()
             con.execute(
-                "INSERT INTO tasks (id, title, body, procedure, status, priority, created_at, assignee, started_at, completed_at, project_id) "
+                "INSERT INTO tasks (id, title, body, procedure, status, priority, created_at, assignee, started_at, completed_at, project_ids) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, title, desc, proc, status, prio, now, "user", start_ts or None, due_ts or None, project or None),
+                (task_id, title, desc, proc, status, prio, now, "user", start_ts or None, due_ts or None, project_ids_str or None),
             )
             con.execute(
                 "INSERT OR REPLACE INTO task_estimates (task_id, estimated_minutes, buffer_percent) VALUES (?, ?, ?)",
@@ -440,7 +451,10 @@ class KanbanHandler(SimpleHTTPRequestHandler):
 
         elif path == "/api/brainstorm":
             content = body.get("content", "").strip()
-            project = body.get("project", "").strip()
+            projects = body.get("projects", [])
+            if isinstance(projects, str):
+                projects = [p.strip() for p in projects.split(",") if p.strip()]
+            project_ids_str = json.dumps(projects)
             if not content:
                 self.send_json({"error": "empty content"}, 400)
                 return
@@ -510,7 +524,10 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             prio_str = body.get("priority", "")
             start_str = body.get("start_date", "")
             due_str = body.get("due_date", "")
-            project = body.get("project", "")
+            projects = body.get("projects", [])
+            if isinstance(projects, str):
+                projects = [p.strip() for p in projects.split(",") if p.strip()]
+            project_ids_str = json.dumps(projects) if projects else "[]"
             est_min = body.get("estimated_minutes")
             buf_pct = body.get("buffer_percent")
 
@@ -533,9 +550,9 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 due_ts = date_to_ts(due_str)
                 updates.append("completed_at=?")
                 params.append(due_ts)
-            if body.get("project") is not None:
-                updates.append("project_id=?")
-                params.append(project.strip() or None)
+            if body.get("projects") is not None:
+                updates.append("project_ids=?")
+                params.append(project_ids_str)
             if body.get("procedure") is not None:
                 updates.append("procedure=?")
                 params.append(body.get("procedure", "").strip())
@@ -888,7 +905,7 @@ async function loadTasks() {
       allTasks.length + ' Aufgaben · ' + new Date().toLocaleTimeString('de-DE');
 
     // Update project filters
-    const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
+    const projs = [...new Set(allTasks.flatMap(t => getProjs(t)).filter(Boolean))].sort();
     const opts = projs.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
     const filterSel = document.getElementById('projectFilter');
     const currentVal = filterSel.value;
@@ -952,10 +969,15 @@ function kanbanCol(t) {
   return COLS.includes(t.status) ? t.status : 'backlog';
 }
 
+function getProjs(t){
+  try{const p=JSON.parse(t.project_ids||'[]');return Array.isArray(p)?p:[]}catch(e){return []}
+}
+function getProjStr(t){return getProjs(t).filter(Boolean).join(', ')||'(ohne Projekt)'}
+
 function renderKanban() {
   const filter = document.getElementById('projectFilter').value;
   const kanban = document.getElementById('kanban');
-  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
+  const filtered = filter ? allTasks.filter(t => getProjs(t).includes(filter)) : allTasks;
   kanban.innerHTML = COLS.map(col => {
     const items = filtered.filter(t => kanbanCol(t) === col);
     return `<div class="column">
@@ -982,7 +1004,8 @@ function renderCard(t) {
   const estHtml = t.estimated_minutes > 0
     ? `<div class="card-est">🕐 ${fmtMinutes(t.estimated_minutes)}${t.buffer_percent ? ' +'+t.buffer_percent+'% Puffer' : ''}</div>`
     : '';
-  const projHtml = t.project_id ? `<span style="background:#e5e7eb;border-radius:3px;padding:1px 5px;font-size:9px;color:var(--text-medium)">📁 ${escHtml(t.project_id)}</span>` : '';
+  const projs2 = getProjs(t);
+  const projHtml = projs2.length ? projs2.map(p => `<span style="background:#e5e7eb;border-radius:3px;padding:1px 5px;font-size:9px;color:var(--text-medium);margin:0 1px">📁 ${escHtml(p)}</span>`).join('') : '';
   return `<div class="card prio-${prio}" data-task-id="${t.id}" draggable="true" ondragstart="onDragStart(event)" onclick="editTask('${t.id}')">
     <div class="card-actions" onclick="event.stopPropagation()">
       <button onclick="event.stopPropagation();startPomoForTask('${t.id}')" title="Fokus">🍅</button>
@@ -1094,12 +1117,9 @@ function openCreateModal() {
         </select>
       </div>
     </div>
-    <label>📁 Projekt</label>
-    <select id="fProject" onchange="if(this.value==='__new__'){this.style.display='none';document.getElementById('fProjectNew').style.display='block';document.getElementById('fProjectNew').focus()}">
-      <option value="">— Keins —</option>
-      <option value="__new__">➕ Neu …</option>
-    </select>
-    <input type="text" id="fProjectNew" style="display:none" placeholder="Neues Projekt …">
+    <label>📁 Projekte</label>
+    <div id="fProjectWrap" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text);min-height:32px"></div>
+    <input type="text" id="fProjectNew" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text)" placeholder="Neues Projekt (mit Komma trennen)...">
     <label>Status</label>
     <select id="fStatus">
       <option value="backlog">📋 Backlog</option>
@@ -1111,15 +1131,15 @@ function openCreateModal() {
       <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
       <button class="btn btn-primary" onclick="createTask()">Erstellen</button>
     </div>`;
-  // Populate project select
-  const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
-  const projSel = document.getElementById('fProject');
-  if (projSel) {
-    const cur = projSel.value;
-    projSel.innerHTML = '<option value="">— Keins —</option>'
-      + projs.map(p => '<option value="'+escHtml(p)+'">'+escHtml(p)+'</option>').join('')
-      + '<option value="__new__">➕ Neu …</option>';
-    projSel.value = cur;
+  // Populate multi-project checkboxes
+  const projs = [...new Set(allTasks.flatMap(t => getProjs(t)).filter(Boolean))].sort();
+  const pWrap = document.getElementById('fProjectWrap');
+  if (pWrap) {
+    pWrap.innerHTML = projs.map(p =>
+      `<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer">
+        <input type="checkbox" value="${escHtml(p)}"> 📁 ${escHtml(p)}
+      </label>`
+    ).join('') || '<span style="color:var(--text-dim);font-size:11px">Keine Projekte vorhanden — neues unten eintragen</span>';
   }
   document.getElementById('modalOverlay').classList.add('show');
   setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
@@ -1128,16 +1148,17 @@ function openCreateModal() {
 async function createTask() {
   const title = document.getElementById('fTitle').value.trim();
   if (!title) { alert('Titel ist Pflicht!'); return; }
-  const projSel = document.getElementById('fProject');
-  const projNew = document.getElementById('fProjectNew');
-  const project = projNew.style.display !== 'none' && projNew.value.trim()
-    ? projNew.value.trim() : projSel.value;
+  const checks = document.querySelectorAll('#fProjectWrap input[type=checkbox]:checked');
+  const fromChecks = Array.from(checks).map(c => c.value);
+  const custom = document.getElementById('fProjectNew')?.value.trim() || '';
+  const fromCustom = custom ? custom.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const projects = [...new Set([...fromChecks, ...fromCustom])];
   await api('/api/tasks', {method:'POST', body:JSON.stringify({
     title,
     body: document.getElementById('fBody').value.trim(),
     procedure: document.getElementById('fProcedure').value.trim(),
     priority: document.getElementById('fPrio').value,
-    project,
+    projects,
     status: document.getElementById('fStatus').value,
     start_date: document.getElementById('fStart').value,
     due_date: document.getElementById('fDue').value,
@@ -1181,12 +1202,9 @@ async function editTask(id) {
         </select>
       </div>
     </div>
-    <label>📁 Projekt</label>
-    <select id="fProject" onchange="if(this.value==='__new__'){this.style.display='none';document.getElementById('fProjectNew').style.display='block';document.getElementById('fProjectNew').focus()}">
-      <option value="">— Keins —</option>
-      <option value="__new__">➕ Neu …</option>
-    </select>
-    <input type="text" id="fProjectNew" style="display:none" placeholder="Neues Projekt …">
+    <label>📁 Projekte</label>
+    <div id="fProjectWrap" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text);min-height:32px"></div>
+    <input type="text" id="fProjectNew" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text)" placeholder="Neues Projekt (mit Komma trennen)...">
     <div class="row2">
       <div><label>Status</label>
         <select id="fStatus" autocomplete="off">
@@ -1206,30 +1224,34 @@ async function editTask(id) {
   document.getElementById('fStatus').addEventListener('change', (e) => {
     if (e.isTrusted) changeStatus(t.id, e.target.value);
   });
-  // Populate project select and set current value
-  const projs2 = [...new Set(allTasks.map(x => x.project_id).filter(Boolean))].sort();
-  const projSel2 = document.getElementById('fProject');
-  if (projSel2) {
-    projSel2.innerHTML = '<option value="">— Keins —</option>'
-      + projs2.map(p => '<option value="'+escHtml(p)+'">'+escHtml(p)+'</option>').join('')
-      + '<option value="__new__">➕ Neu …</option>';
-    projSel2.value = t.project_id || '';
+  // Populate multi-project checkboxes
+  const allProjs = [...new Set(allTasks.flatMap(x => getProjs(x)).filter(Boolean))].sort();
+  const tProjs = getProjs(t);
+  const pWrap = document.getElementById('fProjectWrap');
+  if (pWrap) {
+    pWrap.innerHTML = allProjs.map(p =>
+      `<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer">
+        <input type="checkbox" value="${escHtml(p)}" ${tProjs.includes(p)?'checked':''}>
+        📁 ${escHtml(p)}
+      </label>`
+    ).join('') || '<span style="color:var(--text-dim);font-size:11px">Keine Projekte vorhanden</span>';
   }
   document.getElementById('modalOverlay').classList.add('show');
   setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
 }
 
 async function saveTask(id) {
-  const projSel = document.getElementById('fProject');
-  const projNew = document.getElementById('fProjectNew');
-  const project = projNew && projNew.style.display !== 'none' && projNew.value.trim()
-    ? projNew.value.trim() : (projSel ? projSel.value : '');
+  const checks = document.querySelectorAll('#fProjectWrap input[type=checkbox]:checked');
+  const fromChecks = Array.from(checks).map(c => c.value);
+  const custom = document.getElementById('fProjectNew').value.trim() || '';
+  const fromCustom = custom ? custom.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const projects = [...new Set([...fromChecks, ...fromCustom])];
   await api('/api/tasks/'+id, {method:'PUT', body:JSON.stringify({
     title: document.getElementById('fTitle').value.trim(),
     body: document.getElementById('fBody').value.trim(),
     procedure: document.getElementById('fProcedure').value.trim(),
     priority: document.getElementById('fPrio').value,
-    project,
+    projects,
     start_date: document.getElementById('fStart').value,
     due_date: document.getElementById('fDue').value,
     estimated_minutes: parseInt(document.getElementById('fEst').value) || 0,
@@ -1251,7 +1273,7 @@ function renderGantt() {
     wrap.innerHTML = '<div class="empty-state">Keine Aufgaben vorhanden</div>';
     return;
   }
-  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
+  const filtered = filter ? allTasks.filter(t => getProjs(t).includes(filter)) : allTasks;
   const dated = filtered.filter(t => t.started_at || t.completed_at);
   if (!dated.length) {
     wrap.innerHTML = '<div class="empty-state">Keine Aufgaben mit Datum. Setze Start/Ziel in den Karten.</div>';
@@ -1288,7 +1310,7 @@ function renderGantt() {
       <td><span style="color:${PRIO_C[prio]};font-weight:600">${prio}</span></td>
       <td>${COL_NAMES[t.status]||t.status}</td>
       <td style="color:#7C3AED;font-weight:500;font-size:12px">${estStr}</td>
-      <td style="font-size:12px">${escHtml(t.project_id||'—')}</td>
+      <td style="font-size:12px">${escHtml(getProjStr(t))}</td>
       <td class="gantt-date">${t.started_at ? tsToDate(t.started_at) : (t.created_at ? tsToDate(t.created_at) : '—')}</td>
       <td class="gantt-date">${t.completed_at ? tsToDate(t.completed_at) : (t.status==='completed' ? '—' : 'offen')}</td>
     </tr>`;
@@ -1457,7 +1479,8 @@ function renderOverview() {
   }
   const byProj = {};
   allTasks.forEach(t => {
-    const p = t.project_id || '(ohne Projekt)';
+    const pList = getProjs(t);
+    const p = pList.length ? pList[0] : '(ohne Projekt)';
     if (!byProj[p]) byProj[p] = [];
     byProj[p].push(t);
   });
@@ -1510,7 +1533,8 @@ function renderOverview() {
   });
   const byProjWeek = {};
   weekTasks.forEach(t => {
-    const p = t.project_id || 'Unsortiert';
+    const pList2 = getProjs(t);
+    const p = pList2.length ? pList2[0] : 'Unsortiert';
     byProjWeek[p] = (byProjWeek[p]||0) + (t.estimated_minutes||0);
   });
   const wpEntries = Object.entries(byProjWeek).sort((a,b) => b[1]-a[1]);
@@ -1630,7 +1654,7 @@ function renderCalWeek(wrap) {
   const nextDayTs = days.map(d => Math.floor(new Date(d.getFullYear(),d.getMonth(),d.getDate()+1).getTime()/1000));
   const byDay = days.map(()=>[]);
   const calFilter = document.getElementById('calProjectFilter').value;
-  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calTasks = calFilter ? allTasks.filter(t => getProjs(t).includes(calFilter)) : allTasks;
   const calDated = calTasks.filter(t => t.started_at || t.completed_at);
   calDated.forEach(t => {
     const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
@@ -1668,7 +1692,7 @@ function renderCalDay(wrap) {
   const dayStart = Math.floor(new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime()/1000);
   const dayEnd = dayStart + 86400;
   const calFilter = document.getElementById('calProjectFilter').value;
-  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calTasks = calFilter ? allTasks.filter(t => getProjs(t).includes(calFilter)) : allTasks;
   const calDated = calTasks.filter(t => t.started_at || t.completed_at);
   const tasks = calDated.filter(t => {
     const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
@@ -1690,7 +1714,7 @@ function renderCalDay(wrap) {
         + '<div style="font-size:13px;font-weight:600;color:'+(done?'#999':'#1a1a2e')+';'+(done?'text-decoration:line-through':'')+'">'+escHtml(t.title)+'</div>'
         + '<div style="font-size:10px;color:#888;margin-top:2px;display:flex;gap:8px">'
         + '<span style="color:'+(colors[prio]||'#999')+';font-weight:600">'+prio+'</span>'
-        + (t.project_id ? '<span>📁 '+escHtml(t.project_id)+'</span>' : '')
+        + (getProjs(t).length ? '<span>📁 '+escHtml(getProjStr(t))+'</span>' : '')
         + '<span>'+(COL_NAMES[t.status]||t.status)+'</span>'
         + (t.estimated_minutes ? '<span>🕐 '+_fmtM(t.estimated_minutes)+'</span>' : '')
         + '</div></div>'
@@ -1755,7 +1779,7 @@ function renderCalMonth(wrap) {
   h += '</tr></thead><tbody>';
   const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
   const calFilter = document.getElementById('calProjectFilter').value;
-  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calTasks = calFilter ? allTasks.filter(t => getProjs(t).includes(calFilter)) : allTasks;
   const calDated = calTasks.filter(t => t.started_at || t.completed_at);
   const tNow = Math.floor(Date.now()/1000);
   let day = 1;
@@ -1798,7 +1822,7 @@ function renderCalYear(wrap) {
   document.getElementById('calLabel').textContent = 'Jahr ' + year;
   const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
   const calFilter = document.getElementById('calProjectFilter').value;
-  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calTasks = calFilter ? allTasks.filter(t => getProjs(t).includes(calFilter)) : allTasks;
   let h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
   for (let m = 0; m < 12; m++) {
     const first = new Date(year, m, 1);

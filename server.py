@@ -68,6 +68,36 @@ def ensure_tables():
             notes TEXT DEFAULT ''
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT DEFAULT '',
+            status TEXT DEFAULT 'ready',
+            priority INTEGER DEFAULT 2,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            assignee TEXT DEFAULT '',
+            project_id TEXT DEFAULT ''
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS routines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT DEFAULT '',
+            icon TEXT DEFAULT '🔄',
+            sort_order INTEGER DEFAULT 0
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS routine_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            routine_id INTEGER NOT NULL,
+            completed_at INTEGER NOT NULL
+        )
+    """)
     con.commit()
     con.close()
 
@@ -406,12 +436,13 @@ class KanbanHandler(SimpleHTTPRequestHandler):
         pass
 
 
+# Das <title> und die h1-Überschrift anpassen
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Projekte · Christian Radden</title>
+<title>Projekte · Paul Dubrovnik</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f6f8;color:#1a1a2e;padding:20px}
@@ -520,7 +551,7 @@ h1 span{color:#007FA7;font-weight:400}
 </style>
 </head>
 <body>
-<h1>Projekte <span>· Christian Radden</span></h1>
+<h1>Projekte <span>· Paul Dubrovnik</span></h1>
 <div class="sub" id="statusLine">Lade Daten …</div>
 
 <div class="tabs">
@@ -1568,7 +1599,7 @@ function switchTab(name) {
 // Restore title when timer done
 setInterval(() => {
   if (pomoState === 'idle' || pomoState === 'paused') {
-    document.title = 'Projekte · Christian Radden';
+    document.title = 'Projekte · Paul Dubrovnik';
   }
 }, 5000);
 

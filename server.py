@@ -1849,9 +1849,6 @@ function toggleTheme(){
   const isDark=document.body.classList.toggle('dark-mode');
   localStorage.setItem('kanbanTheme',isDark?'dark':'light');
   document.getElementById('themeFab').textContent=isDark?'☀️':'🌙';
-  // Refresh dynamic content (charts, calendar, gantt) for new theme
-  const tab=document.querySelector('.tab.active');
-  if(tab) switchTab(tab.dataset.tab);
 }
 (function(){
   if(localStorage.getItem('kanbanTheme')==='dark'){

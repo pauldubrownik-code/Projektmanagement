@@ -37,14 +37,6 @@ def sync_db_to_git():
         return  # sync deaktiviert
     try:
         cwd = str(BASE)
-        # Remote-URL holen und Token einbetten
-        r = _run_git(["git", "remote", "get-url", GIT_REMOTE], cwd, silent_ok=True)
-        if r.returncode != 0:
-            _sync_log("Remote fehlt — sync unmöglich")
-            return
-        raw_url = r.stdout.strip()
-        authed_url = raw_url.replace("https://", f"https://x-access-token:{GITHUB_TOKEN}@")
-        _run_git(["git", "remote", "set-url", GIT_REMOTE, authed_url], cwd)
         _run_git(["git", "add", str(KANBAN_DB.relative_to(BASE))], cwd)
         res = _run_git(["git", "diff", "--cached", "--quiet"], cwd, silent_ok=True)
         if res.returncode == 0:

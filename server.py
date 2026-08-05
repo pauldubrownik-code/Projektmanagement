@@ -19,6 +19,11 @@ KANBAN_DB = BASE / "data" / "kanban.db"
 PORT = int(os.environ.get("PORT", 8089))
 HOST = "0.0.0.0"
 
+# ── Optionaler Passwortschutz ──
+AUTH_USER = os.environ.get("KANBAN_USER", "")
+AUTH_PASS = os.environ.get("KANBAN_PASS", "")
+AUTH_REALM = "Projektmanagement"
+
 PRIO_LABELS = {1: "hoch", 2: "mittel", 3: "niedrig"}
 PRIO_VALUES = {"hoch": 1, "mittel": 2, "niedrig": 3}
 STATUS_ORDER = ["backlog", "ready", "running", "completed", "blocked"]
@@ -191,7 +196,36 @@ def date_to_ts(date_str):
 
 class KanbanHandler(SimpleHTTPRequestHandler):
 
+    # ── Passwortschutz ──
+    def require_auth(self):
+        if not AUTH_USER:
+            return True  # Auth ist deaktiviert
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Basic "):
+            self._send_auth_challenge()
+            return False
+        import base64
+        try:
+            decoded = base64.b64decode(auth[6:]).decode("utf-8")
+            user, _, pwd = decoded.partition(":")
+        except Exception:
+            self._send_auth_challenge()
+            return False
+        if user == AUTH_USER and pwd == AUTH_PASS:
+            return True
+        self._send_auth_challenge()
+        return False
+
+    def _send_auth_challenge(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", f'Basic realm="{AUTH_REALM}"')
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"<h1>401 Unauthorized</h1><p>Zugriff nur mit g&uuml;ltigen Anmeldedaten.</p>")
+
     def do_GET(self):
+        if not self.require_auth():
+            return
         path = self.path.rstrip("/")
         if path == "/":
             self.send_html(INDEX_HTML)
@@ -227,6 +261,8 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             self.send_html(INDEX_HTML)
 
     def do_POST(self):
+        if not self.require_auth():
+            return
         body = self._read_body()
         path = self.path.rstrip("/")
 
@@ -382,6 +418,8 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
+        if not self.require_auth():
+            return
         path = self.path.rstrip("/")
         if path.startswith("/api/tasks/"):
             task_id = path.split("/api/tasks/")[1].split("/")[0]

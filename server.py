@@ -790,6 +790,9 @@ h1 span{color:var(--accent);font-weight:400}
     <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:var(--surface)">
       <option value="">📁 Alle Projekte</option>
     </select>
+    <div style="position:relative;flex:1;min-width:160px">
+      <input id="smartInput" type="text" style="width:100%;padding:6px 30px 6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:var(--input-bg);color:var(--text)" placeholder="🧠 'Klarna (5min)' ⏎" onkeydown="if(event.key==='Enter')smartAdd(event.target.value)">
+    </div>
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
   <div id="kanban" class="kanban"><div class="loading"><span class="spinner"></span>Lade …</div></div>
@@ -843,20 +846,27 @@ h1 span{color:var(--accent);font-weight:400}
   </div>
 </div>
 
-<!-- Import Modal -->
+<!-- Smart AI Import Modal -->
 <div class="modal-overlay" id="importOverlay" onclick="if(event.target===this)closeImportModal()">
   <div class="modal-content" style="max-width:600px;max-height:80vh;overflow-y:auto">
     <span class="modal-close" onclick="closeImportModal()">&times;</span>
-    <h2>📥 Aufgaben importieren</h2>
-    <p style="font-size:12px;color:var(--text-dim);margin:0 0 10px">Paste your list. Lines starting with <code>###</code> → project, <code>*</code> → task. Items with <code>!!</code> → ready, <code>[blocked]</code> → blocked.</p>
-    <textarea id="importText" style="width:100%;min-height:300px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:monospace;background:var(--input-bg);color:var(--text);resize:vertical" placeholder="### Projektname&#10;* Aufgabe 1&#10;* !! Aufgabe 2 (wird ready)&#10;* [blocked] Aufgabe 3 (wird blocked)&#10;&#10;### Nächstes Projekt&#10;* ..."></textarea>
-    <div style="margin:8px 0;font-size:12px;color:var(--text-dim)">
-      <label><input type="checkbox" id="importAsRunning" checked> Erstellte Aufgaben auf <strong>ready</strong> setzen</label>
-    </div>
+    <h2>🧠 KI-Smart-Import</h2>
+    <p style="font-size:12px;color:var(--text-dim);margin:0 0 6px">Einfach Text reinpasten — KI erkennt <strong>Projekt, Priorität, Dauer & Status</strong> automatisch.</p>
+    <p style="font-size:11px;color:var(--text-dim);margin:0 0 10px">🔍 Z.B. <em>"Dringend: Klarna Rechnung bezahlen (5min)"</em> → hoch Prio, 5min, Finanzen &amp; Admin. <em>Mit ### für Kategorien, * für Aufgaben.</em></p>
+    <textarea id="importText" style="width:100%;min-height:250px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:monospace;background:var(--input-bg);color:var(--text);resize:vertical" placeholder="### 💼 Beruf & Schule
+* Dringend: Mit Chef über Gehaltserhöhung sprechen (30min)
+* !! Arbeitsstunden-System entwickeln (2h)
+* [blocked] Danju Website — warte auf Feedback
+
+### 🔴 Finanzen
+* Klarna Rechnungen bezahlen (5min)
+* MagentaTV kündigen!!"></textarea>
+    <div id="importPreview" style="display:none;margin:8px 0;font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;max-height:200px;overflow-y:auto"></div>
     <div id="importProgress" style="display:none;font-size:12px;margin:6px 0"></div>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="closeImportModal()">Abbrechen</button>
-      <button class="btn btn-primary" onclick="runImport()">📥 Importieren</button>
+      <button class="btn btn-secondary" onclick="previewImport()">🔍 Vorschau</button>
+      <button class="btn btn-primary" onclick="runImport()">🧠 KI-Import</button>
     </div>
   </div>
 </div>
@@ -1900,48 +1910,116 @@ function toggleTheme(){
   }
 })();
 
-// ── Import ──
+// ── KI-Smart-Import ──
+const KI_PROJEKTE = [
+  { keys: ['rechnung','konto','abo','versicherung','bank','schulden','geld','überweisen','klarna','adac','revolut','kündigen','paypal','steuer'], name:'🔴 Finanzen & Admin' },
+  { keys: ['chef','gehalt','job','schule','bewerbung','website','arbeitgeber','arbeitnehmer','stunden','stundenzettel','claude','mercat','danju','kurs','fortbildung','rettungsschwimmer','erste hilfe'], name:'💼 Beruf & Schule' },
+  { keys: ['zimmer','tür','hecke','pflanze','topf','garten','reparier','umbau','streichen','klinke','gewächshaus','palme','vorhang','nähen','föhn','homescreen','youtube','setup','scherbe','kasten','nebelmaschine','flurpflanze'], name:'🛠️ Zuhause & Handwerk' },
+  { keys: ['fitness','training','sport','schwimmen','laufen','ernährung','arzt','friseur','puls','schuhe','badekappe','neopren','trinkflasche','trichterbrust','sprungkraft','journal','zahnschutz','vitamin','protein'], name:'🏋️ Körper & Fitness' },
+  { keys: ['kaufen','bestellen','einkaufen','supermarkt','rossmann','mediamarkt','decathlon','lidl','rewe','netto','shampoo','sonnencreme','rasierer','mehrfachstecker','thermostat','apple kabel','schuhkleber','sonnenbrille','adidas','vinted'], name:'🛍️ Besorgungen & Shopping' },
+  { keys: ['mama','papa','opa','oma','freund','familie','geburtstag','anruf','geschenk','kartfahren','schach','lotte','peer','shishabar','felix','denise','dkms','galaxy buds'], name:'🤝 Soziales & Familie' },
+  { keys: ['film','buch','musik','lernen','serie','kino','duolingo','nolan','michael jackson','hail mary','life maxing','dehnen','atmen','twingo','boot','roller'], name:'🎬 Freizeit & Medien' },
+  { keys: ['secondhand','flohmarkt','vinted'], name:'🛍️ Vinted & Secondhand' },
+];
+
+function kiErkenneProjekt(text) {
+  const t = text.toLowerCase();
+  for (const p of KI_PROJEKTE) {
+    if (p.keys.some(k => t.includes(k))) return p.name;
+  }
+  return '';
+}
+function kiErkennePrio(text) {
+  const t = text.toLowerCase();
+  if (/\bdringend\b|\bsofort\b|\basap\b|\bwichtig\b|!!/.test(t)) return 'hoch';
+  if (/\birgendwann\b|\bvielleicht\b|\boptional\b/.test(t)) return 'niedrig';
+  return 'mittel';
+}
+function kiErkenneDauer(text) {
+  const m = text.match(/(?:ca\.?\s*)?(\d+)\s*(?:min|minuten|m\b)/i) || text.match(/(?:ca\.?\s*)?(\d+)\s*(?:h|stunden|hour)/i);
+  if (m) {
+    const n = parseInt(m[1]);
+    if (m[0].toLowerCase().includes('h') || m[0].toLowerCase().includes('stunden') || m[0].toLowerCase().includes('hour')) return n * 60;
+    return n;
+  }
+  return 0;
+}
+function kiErkenneStatus(text) {
+  if (text.includes('[blocked]') || /warte auf|blockiert/i.test(text)) return 'blocked';
+  if (text.startsWith('!!') || /dringend|sofort/i.test(text)) return 'ready';
+  return 'backlog';
+}
+function kiParseTitle(text) {
+  let t = text;
+  // remove markers
+  t = t.replace(/^!!\s*/, '');
+  t = t.replace(/^\[blocked\]\s*/i, '');
+  // remove duration like (30min), (2h)
+  t = t.replace(/\s*\(?\s*(?:ca\.?\s*)?\d+\s*(?:min|minuten|m\b|h|stunden|hour)s?\)?\s*/gi, '');
+  // remove priority markers
+  t = t.replace(/^Dringend:\s*/i, '').replace(/^Wichtig:\s*/i, '');
+  return t.trim();
+}
+function kiParseTasks(text) {
+  const lines = text.split('\n');
+  let currentProject = '';
+  const tasks = [];
+  for (let line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    if (t.startsWith('###')) {
+      currentProject = t.replace(/^###\s*/, '').trim();
+      continue;
+    }
+    if (t.startsWith('*') || t.startsWith('-')) {
+      let raw = t.replace(/^[\*\-]\s*/, '').trim();
+      const aiProj = kiErkenneProjekt(raw);
+      const project = currentProject || aiProj;
+      tasks.push({
+        title: kiParseTitle(raw),
+        raw: raw,
+        project: project,
+        priority: kiErkennePrio(raw),
+        estimated: kiErkenneDauer(raw),
+        status: kiErkenneStatus(raw),
+      });
+    }
+  }
+  return tasks;
+}
 function openImportModal(){
   document.getElementById('importText').value = '';
   document.getElementById('importProgress').style.display = 'none';
+  document.getElementById('importPreview').style.display = 'none';
   document.getElementById('importOverlay').classList.add('show');
 }
 function closeImportModal(){
   document.getElementById('importOverlay').classList.remove('show');
 }
+function previewImport(){
+  const text = document.getElementById('importText').value;
+  if (!text.trim()) return;
+  const tasks = kiParseTasks(text);
+  if (!tasks.length) { alert('Keine Aufgaben gefunden.'); return; }
+  const prev = document.getElementById('importPreview');
+  prev.style.display = 'block';
+  prev.innerHTML = '<div style="font-weight:700;margin-bottom:6px">🔍 KI-Analyse — ' + tasks.length + ' Aufgaben erkannt:</div>' +
+    tasks.map((t,i) => {
+      const emoji = t.status==='blocked'?'🔴':t.status==='ready'?'🟢':'📋';
+      const prioIcon = t.priority==='hoch'?'🔴':t.priority==='niedrig'?'🟢':'🟡';
+      const dauer = t.estimated ? ' ⏱'+t.estimated+'min' : '';
+      return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">${i+1}. ${emoji} <b>${escHtml(t.title)}</b> ${prioIcon} ${t.project ? '<span style="color:var(--text-dim)">📁'+escHtml(t.project)+'</span>':''}${dauer}</div>`;
+    }).join('');
+}
 async function runImport(){
   const text = document.getElementById('importText').value;
   if (!text.trim()) return;
-  const lines = text.split('\n');
-  let currentProject = '';
-  let tasks = [];
-  let taskCount = 0;
-  for (let line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (trimmed.startsWith('###')) {
-      currentProject = trimmed.replace(/^###\s*/, '').replace(/^[🔴💼🛠️🏋️🛍️🤝🎬]\s*/, '').trim();
-      continue;
-    }
-    if (trimmed.startsWith('*') || trimmed.startsWith('-')) {
-      let title = trimmed.replace(/^[\*\-]\s*/, '').trim();
-      let status = document.getElementById('importAsRunning').checked ? 'ready' : 'backlog';
-      let isBlocked = false;
-      if (title.startsWith('!!')) { title = title.replace(/^!!\s*/, '').trim(); status = 'ready'; }
-      if (title.startsWith('[blocked]') || title.includes('(blocked)')) {
-        title = title.replace(/^\[blocked\]\s*/, '').replace(/\s*\(blocked\)\s*/, '').trim();
-        isBlocked = true;
-        status = 'blocked';
-      }
-      tasks.push({ title, status, projects: currentProject ? [currentProject] : [] });
-      taskCount++;
-    }
-  }
-  if (tasks.length === 0) { alert('Keine Aufgaben gefunden — benutze ### für Projekte und * für Aufgaben.'); return; }
+  const tasks = kiParseTasks(text);
+  if (!tasks.length) { alert('Keine Aufgaben gefunden.'); return; }
 
   const progress = document.getElementById('importProgress');
   progress.style.display = 'block';
-  progress.innerHTML = `0 / ${tasks.length} erstellt …`;
+  progress.innerHTML = `🧠 ${tasks.length} Aufgaben werden analysiert & erstellt …`;
 
   let created = 0;
   for (const t of tasks) {
@@ -1949,24 +2027,56 @@ async function runImport(){
       await api('/api/tasks', {method:'POST', body:JSON.stringify({
         title: t.title,
         status: t.status,
-        projects: t.projects,
-        priority: 'mittel',
+        projects: t.project ? [t.project] : [],
+        priority: t.priority,
         body: '',
         procedure: '',
         start_date: '',
         due_date: '',
-        estimated_minutes: 0,
+        estimated_minutes: t.estimated,
         buffer_percent: 20,
       })});
       created++;
-      progress.innerHTML = `${created} / ${tasks.length} erstellt …`;
+      progress.innerHTML = `✅ ${created} / ${tasks.length} erstellt …`;
     } catch(e) {
       progress.innerHTML += `<br>❌ ${escHtml(t.title)}: ${e.message}`;
     }
   }
-  progress.innerHTML = `✅ ${created} von ${tasks.length} Aufgaben importiert! Seite lädt neu …`;
+  progress.innerHTML = `🎉 ${created} von ${tasks.length} KI-optimierten Aufgaben erstellt! Seite lädt neu …`;
   await loadTasks();
   closeImportModal();
+}
+
+// ── Smart Quick-Add ──
+async function smartAdd(text){
+  if (!text.trim()) return;
+  const inp = document.getElementById('smartInput');
+  inp.disabled = true;
+  const prev = inp.value;
+  inp.value = '🧠 analysiere …';
+  const tasks = kiParseTasks('* ' + text);
+  if (!tasks.length) { inp.value = prev; inp.disabled = false; return; }
+  const t = tasks[0];
+  try {
+    await api('/api/tasks', {method:'POST', body:JSON.stringify({
+      title: t.title,
+      status: t.status,
+      projects: t.project ? [t.project] : [],
+      priority: t.priority,
+      body: '',
+      procedure: '',
+      start_date: '',
+      due_date: '',
+      estimated_minutes: t.estimated,
+      buffer_percent: 20,
+    })});
+    inp.value = '';
+    await loadTasks();
+  } catch(e) {
+    inp.value = '❌ ' + e.message;
+    setTimeout(() => { inp.value = prev; }, 2000);
+  }
+  inp.disabled = false;
 }
 
 // ── Init ──

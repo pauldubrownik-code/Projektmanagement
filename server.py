@@ -24,6 +24,47 @@ AUTH_USER = os.environ.get("KANBAN_USER", "")
 AUTH_PASS = os.environ.get("KANBAN_PASS", "")
 AUTH_REALM = "Projektmanagement"
 
+# ── GitHub Sync für DB-Persistenz ──
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GIT_REMOTE = "origin"
+GIT_BRANCH = "main"
+
+
+def sync_db_to_git():
+    """Commit und Push der DB nach jeder Änderung, damit Daten
+    bei Render-Neudeployments nicht verloren gehen."""
+    if not GITHUB_TOKEN:
+        return  # sync deaktiviert
+    try:
+        import subprocess, os
+        cwd = str(BASE)
+        # Token in Remote-URL einbetten
+        remote_url = subprocess.run(
+            ["git", "remote", "get-url", GIT_REMOTE],
+            capture_output=True, text=True, cwd=cwd
+        ).stdout.strip()
+        if not remote_url:
+            return
+        authed_url = remote_url.replace("https://", f"https://x-access-token:{GITHUB_TOKEN}@")
+        subprocess.run(["git", "remote", "set-url", GIT_REMOTE, authed_url],
+                       capture_output=True, cwd=cwd)
+        subprocess.run(["git", "add", str(KANBAN_DB.relative_to(BASE))],
+                       capture_output=True, cwd=cwd)
+        res = subprocess.run(["git", "diff", "--cached", "--quiet"],
+                             capture_output=True, cwd=cwd)
+        if res.returncode == 0:
+            return  # nichts geändert
+        subprocess.run(["git", "commit", "-m", "auto-sync DB [ci skip]"],
+                       capture_output=True, cwd=cwd,
+                       env={**os.environ, "GIT_AUTHOR_NAME": "Kanban Bot",
+                            "GIT_AUTHOR_EMAIL": "bot@kanban.local",
+                            "GIT_COMMITTER_NAME": "Kanban Bot",
+                            "GIT_COMMITTER_EMAIL": "bot@kanban.local"})
+        subprocess.run(["git", "push", GIT_REMOTE, GIT_BRANCH],
+                       capture_output=True, cwd=cwd)
+    except Exception:
+        pass  # Silent fail — App läuft trotzdem
+
 PRIO_LABELS = {1: "hoch", 2: "mittel", 3: "niedrig"}
 PRIO_VALUES = {"hoch": 1, "mittel": 2, "niedrig": 3}
 STATUS_ORDER = ["backlog", "ready", "running", "completed", "blocked"]
@@ -293,6 +334,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             )
             con.commit()
             con.close()
+            sync_db_to_git()
             self.send_json({"ok": True, "id": task_id})
 
         elif path == "/api/brainstorm":
@@ -307,6 +349,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                         (content, project, now))
             con.commit()
             con.close()
+            sync_db_to_git()
             self.send_json({"ok": True})
 
         elif path.startswith("/api/routines/") and path.endswith("/toggle"):
@@ -324,6 +367,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 con.execute("INSERT INTO routine_logs (routine_id, completed_at) VALUES (?, ?)", (rid, now))
             con.commit()
             con.close()
+            sync_db_to_git()
             self.send_json({"ok": True})
 
         elif path.startswith("/api/tasks/") and path.endswith("/status"):
@@ -342,6 +386,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 con.execute("UPDATE tasks SET status=? WHERE id=?", (new_status, task_id))
             con.commit()
             con.close()
+            sync_db_to_git()
             self.send_json({"ok": True})
         else:
             self.send_json({"error": "not found"}, 404)
@@ -413,6 +458,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 con.commit()
                 con.close()
 
+            sync_db_to_git()
             self.send_json({"ok": True})
         else:
             self.send_json({"error": "not found"}, 404)
@@ -431,6 +477,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             con.execute("DELETE FROM task_estimates WHERE task_id=?", (task_id,))
             con.commit()
             con.close()
+            sync_db_to_git()
             self.send_json({"ok": True})
         elif path.startswith("/api/brainstorm/"):
             entry_id = path.split("/api/brainstorm/")[1].split("/")[0]
@@ -438,6 +485,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             con.execute("DELETE FROM brainstorm WHERE id=?", (entry_id,))
             con.commit()
             con.close()
+            sync_db_to_git()
             self.send_json({"ok": True})
         else:
             self.send_json({"error": "not found"}, 404)

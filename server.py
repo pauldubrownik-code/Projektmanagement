@@ -786,13 +786,10 @@ h1 span{color:var(--accent);font-weight:400}
 <div id="panel-kanban" class="panel">
   <div class="toolbar">
     <button class="btn btn-primary" onclick="openCreateModal()">+ Neue Karte</button>
-    <button class="btn btn-ghost" onclick="openImportModal()">📥 Import</button>
-    <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:var(--surface)">
+    <button class="btn btn-ghost" onclick="openImportModal()">📥 KI-Assistent</button>
+    <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:var(--surface);color:var(--text)">
       <option value="">📁 Alle Projekte</option>
     </select>
-    <div style="position:relative;flex:1;min-width:160px">
-      <input id="smartInput" type="text" style="width:100%;padding:6px 30px 6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:var(--input-bg);color:var(--text)" placeholder="🧠 'Klarna (5min)' ⏎" onkeydown="if(event.key==='Enter')smartAdd(event.target.value)">
-    </div>
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
   <div id="kanban" class="kanban"><div class="loading"><span class="spinner"></span>Lade …</div></div>
@@ -850,9 +847,8 @@ h1 span{color:var(--accent);font-weight:400}
 <div class="modal-overlay" id="importOverlay" onclick="if(event.target===this)closeImportModal()">
   <div class="modal-content" style="max-width:600px;max-height:80vh;overflow-y:auto">
     <span class="modal-close" onclick="closeImportModal()">&times;</span>
-    <h2>🧠 KI-Smart-Import</h2>
-    <p style="font-size:12px;color:var(--text-dim);margin:0 0 6px">Einfach Text reinpasten — KI erkennt <strong>Projekt, Priorität, Dauer & Status</strong> automatisch.</p>
-    <p style="font-size:11px;color:var(--text-dim);margin:0 0 10px">🔍 Z.B. <em>"Dringend: Klarna Rechnung bezahlen (5min)"</em> → hoch Prio, 5min, Finanzen &amp; Admin. <em>Mit ### für Kategorien, * für Aufgaben.</em></p>
+    <h2>📥 KI-Assistent</h2>
+    <p style="font-size:12px;color:var(--text-dim);margin:0 0 6px">Schreib oder paste deine Aufgaben — die KI erkennt <strong>Projekt, Priorität, Dauer & Status</strong>. Vorschau zeigt dir vor dem Anlegen, was erkannt wurde.</p>
     <textarea id="importText" style="width:100%;min-height:250px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:monospace;background:var(--input-bg);color:var(--text);resize:vertical" placeholder="### 💼 Beruf & Schule
 * Dringend: Mit Chef über Gehaltserhöhung sprechen (30min)
 * !! Arbeitsstunden-System entwickeln (2h)
@@ -866,7 +862,7 @@ h1 span{color:var(--accent);font-weight:400}
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="closeImportModal()">Abbrechen</button>
       <button class="btn btn-secondary" onclick="previewImport()">🔍 Vorschau</button>
-      <button class="btn btn-primary" onclick="runImport()">🧠 KI-Import</button>
+      <button class="btn btn-primary" onclick="runImport()">📥 Erstellen</button>
     </div>
   </div>
 </div>
@@ -2045,38 +2041,6 @@ async function runImport(){
   progress.innerHTML = `🎉 ${created} von ${tasks.length} KI-optimierten Aufgaben erstellt! Seite lädt neu …`;
   await loadTasks();
   closeImportModal();
-}
-
-// ── Smart Quick-Add ──
-async function smartAdd(text){
-  if (!text.trim()) return;
-  const inp = document.getElementById('smartInput');
-  inp.disabled = true;
-  const prev = inp.value;
-  inp.value = '🧠 analysiere …';
-  const tasks = kiParseTasks('* ' + text);
-  if (!tasks.length) { inp.value = prev; inp.disabled = false; return; }
-  const t = tasks[0];
-  try {
-    await api('/api/tasks', {method:'POST', body:JSON.stringify({
-      title: t.title,
-      status: t.status,
-      projects: t.project ? [t.project] : [],
-      priority: t.priority,
-      body: '',
-      procedure: '',
-      start_date: '',
-      due_date: '',
-      estimated_minutes: t.estimated,
-      buffer_percent: 20,
-    })});
-    inp.value = '';
-    await loadTasks();
-  } catch(e) {
-    inp.value = '❌ ' + e.message;
-    setTimeout(() => { inp.value = prev; }, 2000);
-  }
-  inp.disabled = false;
 }
 
 // ── Init ──

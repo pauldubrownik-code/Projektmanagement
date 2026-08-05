@@ -1,4 +1,4 @@
-# Projektmanagement · Christian Radden
+# Pauls Projektmanagement · Paul
 
 Dein persönliches Projektmanagement-Repository.
 
@@ -12,19 +12,9 @@ Projektmanagement/
 │   └── archiv/            ← erledigte Aufgaben
 ├── meetings/              ← Meeting-Notizen
 │   └── template.md        ← Vorlage für Termine
+├── tools/                 ← Nützliche Skripte
 └── dashboard.html         ← generierte Projektübersicht
 ```
-
-## Projekte (aktuell)
-
-| Projekt | Status | Priorität | Deadline |
-|---------|--------|-----------|----------|
-| Jessi / Trennung | läuft | 🔴 hoch | — |
-| Roman / Ausschreibungstool | läuft | 🔴 hoch | — |
-| NGD Tagesgeschäft | läuft | 🔴 hoch | täglich |
-| EnnAIgram Shorts | wartet | 🟡 mittel | — |
-| Emil Hermes Agent | wartet | 🟡 mittel | — |
-| Ken Webb Wiki | erledigt | 🟢 niedrig | ✅ |
 
 ## Arbeitsweise
 

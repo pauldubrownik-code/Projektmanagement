@@ -185,9 +185,18 @@ def ensure_git_repo():
     git_dir = str(BASE / ".git")
     repo_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/pauldubrownik-code/Projektmanagement.git"
 
-    import os, shutil
+    import os, shutil, subprocess
 
-    if not os.path.exists(git_dir):
+    # Prüfen ob wir einen gültigen Remote haben
+    def _has_remote():
+        r = subprocess.run(["git", "remote", "-v"], capture_output=True, text=True, cwd=cwd)
+        return "origin" in r.stdout
+
+    if not os.path.exists(git_dir) or not _has_remote():
+        # Alten Git-Müll wegräumen und frisch starten
+        if os.path.exists(git_dir):
+            _sync_log("Entferne ungültiges Git-Repo (kein Remote)...")
+            shutil.rmtree(git_dir)
         _sync_log("Initialisiere Git-Repo...")
         try:
             _run_git(["git", "init"], cwd, check=True)

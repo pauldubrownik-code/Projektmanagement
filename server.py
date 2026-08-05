@@ -442,7 +442,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Projekte · Paul Dubrovnik</title>
+<title>Projekte · Paul Dubrownik</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f6f8;color:#1a1a2e;padding:20px}
@@ -481,6 +481,8 @@ h1 span{color:#007FA7;font-weight:400}
 .card.prio-hoch{border-left-color:#DD3221}
 .card.prio-mittel{border-left-color:#f59e0b}
 .card.prio-niedrig{border-left-color:#6b7280}
+.card.dragging{opacity:0.4;transform:rotate(2deg)}
+.col-body.drag-over{background:#dbeafe;border-radius:8px;min-height:60px}
 .card-title{font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:2px;padding-right:50px}
 .card-body{font-size:11px;color:#666;line-height:1.3;margin-top:4px}
 .card-meta{font-size:10px;color:#999;margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
@@ -551,7 +553,7 @@ h1 span{color:#007FA7;font-weight:400}
 </style>
 </head>
 <body>
-<h1>Projekte <span>· Paul Dubrovnik</span></h1>
+<h1>Projekte <span>· Paul Dubrownik</span></h1>
 <div class="sub" id="statusLine">Lade Daten …</div>
 
 <div class="tabs">
@@ -757,7 +759,7 @@ function renderKanban() {
         <h3>${COL_NAMES[col]}</h3>
         <span class="col-count">${items.length}</span>
       </div>
-      <div class="col-body" data-col="${col}">
+      <div class="col-body" data-col="${col}" ondragover="onDragOver(event)" ondrop="onDrop(event)" ondragleave="onDragLeave(event)">
         ${items.length ? items.map(t => renderCard(t)).join('') :
           '<div class="empty-state">— leer —</div>'}
       </div>
@@ -777,7 +779,7 @@ function renderCard(t) {
     ? `<div class="card-est">🕐 ${fmtMinutes(t.estimated_minutes)}${t.buffer_percent ? ' +'+t.buffer_percent+'% Puffer' : ''}</div>`
     : '';
   const projHtml = t.project_id ? `<span style="background:#e5e7eb;border-radius:3px;padding:1px 5px;font-size:9px;color:#555">📁 ${escHtml(t.project_id)}</span>` : '';
-  return `<div class="card prio-${prio}" data-task-id="${t.id}" onclick="editTask('${t.id}')">
+  return `<div class="card prio-${prio}" data-task-id="${t.id}" draggable="true" ondragstart="onDragStart(event)" onclick="editTask('${t.id}')">
     <div class="card-actions" onclick="event.stopPropagation()">
       <button onclick="event.stopPropagation();startPomoForTask('${t.id}')" title="Fokus">🍅</button>
       <button onclick="deleteTask('${t.id}')" title="Löschen">🗑</button>
@@ -824,6 +826,34 @@ async function deleteTask(id) {
   await api('/api/tasks/'+id, {method:'DELETE'});
   await loadTasks();
 }
+
+// ── Drag & Drop ──
+function onDragStart(e) {
+  e.dataTransfer.setData('text/plain', e.currentTarget.dataset.taskId);
+  e.dataTransfer.effectAllowed = 'move';
+  e.currentTarget.classList.add('dragging');
+}
+function onDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+function onDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+function onDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const taskId = e.dataTransfer.getData('text/plain');
+  const col = e.currentTarget.dataset.col;
+  if (taskId && col) {
+    changeStatus(taskId, col);
+  }
+}
+document.addEventListener('dragend', (e) => {
+  e.target.classList.remove('dragging');
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+});
 
 // ── Create Modal ──
 function openCreateModal() {
@@ -1599,7 +1629,7 @@ function switchTab(name) {
 // Restore title when timer done
 setInterval(() => {
   if (pomoState === 'idle' || pomoState === 'paused') {
-    document.title = 'Projekte · Paul Dubrovnik';
+    document.title = 'Projekte · Paul Dubrownik';
   }
 }, 5000);
 

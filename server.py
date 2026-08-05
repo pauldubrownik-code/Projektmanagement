@@ -157,19 +157,47 @@ def ensure_tables():
 
 ensure_tables()
 
-# ── Sync-Status Log beim Start ──
-if GITHUB_TOKEN:
-    token_preview = GITHUB_TOKEN[:8] + "…" if len(GITHUB_TOKEN) > 8 else "?"
-    print(f"[DB-SYNC] GITHUB_TOKEN vorhanden ({token_preview}), Sync aktiviert", flush=True)
-    import subprocess
-    r = subprocess.run(["git", "remote", "get-url", GIT_REMOTE],
-                       capture_output=True, text=True, cwd=str(BASE))
-    if r.returncode == 0:
-        print(f"[DB-SYNC] Remote: {r.stdout.strip()}", flush=True)
+
+def ensure_git_repo():
+    """Initialisiert ein Git-Repo auf Render (wo Git fehlt) und
+    holt den letzten Stand aus GitHub, damit sync_db_to_git() pushen kann."""
+    if not GITHUB_TOKEN:
+        print("[DB-SYNC] Kein GITHUB_TOKEN — Git-Sync deaktiviert", flush=True)
+        return
+    cwd = str(BASE)
+    git_dir = str(BASE / ".git")
+    repo_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/pauldubrownik-code/Projektmanagement.git"
+
+    import subprocess, os, shutil
+
+    if not os.path.exists(git_dir):
+        print("[DB-SYNC] Initialisiere Git-Repo...", flush=True)
+        subprocess.run(["git", "init"], cwd=cwd, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=cwd, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Kanban Bot"], cwd=cwd, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "bot@kanban.local"], cwd=cwd, capture_output=True)
+        # DB vor dem Reset sichern
+        db_backup = None
+        if KANBAN_DB.exists():
+            db_backup = KANBAN_DB.read_bytes()
+        print("[DB-SYNC] Hole letzten Stand von GitHub...", flush=True)
+        subprocess.run(["git", "fetch", "origin", "main"], cwd=cwd, capture_output=True)
+        subprocess.run(["git", "checkout", "-b", "main"], cwd=cwd, capture_output=True)
+        subprocess.run(["git", "branch", "--set-upstream-to", "origin/main", "main"], cwd=cwd, capture_output=True)
+        # DB wiederherstellen falls vorhanden (vor dem Reset gesichert)
+        if db_backup:
+            KANBAN_DB.parent.mkdir(parents=True, exist_ok=True)
+            KANBAN_DB.write_bytes(db_backup)
+        # Tabellen sicherstellen (falls DB aus GitHub älter ist)
+        ensure_tables()
+        print("[DB-SYNC] Git-Repo bereit ✅", flush=True)
     else:
-        print(f"[DB-SYNC] Kein Git-Repository gefunden: {r.stderr.strip()}", flush=True)
-else:
-    print("[DB-SYNC] GITHUB_TOKEN NICHT gesetzt — Sync deaktiviert!", flush=True)
+        # Bei Folgestarts: einfach pullen
+        subprocess.run(["git", "pull", "--rebase"], cwd=cwd, capture_output=True)
+        print("[DB-SYNC] Git-Repo aktualisiert ✅", flush=True)
+
+
+ensure_git_repo()
 
 
 def fetch_tasks():

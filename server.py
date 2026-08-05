@@ -36,35 +36,31 @@ def sync_db_to_git():
     if not GITHUB_TOKEN:
         return  # sync deaktiviert
     try:
-        import subprocess, os
         cwd = str(BASE)
         # Remote-URL holen und Token einbetten
-        r = subprocess.run(["git", "remote", "get-url", GIT_REMOTE],
-                           capture_output=True, text=True, cwd=cwd)
+        r = _run_git(["git", "remote", "get-url", GIT_REMOTE], cwd, silent_ok=True)
         if r.returncode != 0:
+            _sync_log("Remote fehlt — sync unmöglich")
             return
         raw_url = r.stdout.strip()
         authed_url = raw_url.replace("https://", f"https://x-access-token:{GITHUB_TOKEN}@")
-        subprocess.run(["git", "remote", "set-url", GIT_REMOTE, authed_url],
-                       capture_output=True, cwd=cwd)
-        subprocess.run(["git", "add", str(KANBAN_DB.relative_to(BASE))],
-                       capture_output=True, cwd=cwd)
-        res = subprocess.run(["git", "diff", "--cached", "--quiet"],
-                             capture_output=True, cwd=cwd)
+        _run_git(["git", "remote", "set-url", GIT_REMOTE, authed_url], cwd)
+        _run_git(["git", "add", str(KANBAN_DB.relative_to(BASE))], cwd)
+        res = _run_git(["git", "diff", "--cached", "--quiet"], cwd, silent_ok=True)
         if res.returncode == 0:
             return  # nichts geändert
-        r = subprocess.run(["git", "commit", "-m", "auto-sync DB [ci skip]"],
-                           capture_output=True, text=True, cwd=cwd,
-                           env={**os.environ, "GIT_AUTHOR_NAME": "Kanban Bot",
+        _run_git(["git", "commit", "-m", "auto-sync DB [ci skip]"], cwd,
+                 env_overrides={"GIT_AUTHOR_NAME": "Kanban Bot",
                                 "GIT_AUTHOR_EMAIL": "bot@kanban.local",
                                 "GIT_COMMITTER_NAME": "Kanban Bot",
                                 "GIT_COMMITTER_EMAIL": "bot@kanban.local"})
-        r2 = subprocess.run(["git", "push", "origin", "main"],
-                            capture_output=True, text=True, cwd=cwd)
-        if r2.returncode != 0:
-            print(f"[DB-SYNC] Push fehlgeschlagen: {r2.stderr.strip()}", flush=True)
+        r2 = _run_git(["git", "push", "origin", "main"], cwd)
+        if r2.returncode == 0:
+            _sync_log("DB erfolgreich gepusht ✅")
+        else:
+            _sync_log(f"Push fehlgeschlagen: {r2.stderr.strip()}")
     except Exception as e:
-        print(f"[DB-SYNC] Fehler: {e}", flush=True)
+        _sync_log(f"Fehler: {e}")
 
 PRIO_LABELS = {1: "hoch", 2: "mittel", 3: "niedrig"}
 PRIO_VALUES = {"hoch": 1, "mittel": 2, "niedrig": 3}
@@ -157,44 +153,75 @@ def ensure_tables():
 
 ensure_tables()
 
+SYNC_LOG = []  # wird von ensure_git_repo() und sync_db_to_git() befüllt
+
+
+def _sync_log(msg):
+    SYNC_LOG.append(msg)
+    print(f"[DB-SYNC] {msg}", flush=True)
+
+
+def _run_git(cmd, cwd, check=False, silent_ok=False, env_overrides=None):
+    """Git-Befehl ausführen und bei Fehlern loggen. Mit check=True wird eine Exception geworfen."""
+    import subprocess, os
+    env = {**os.environ, **(env_overrides or {}), "GIT_TERMINAL_PROMPT": "0"}
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, env=env)
+    if r.returncode != 0:
+        msg = f"{' '.join(cmd)}: {r.stderr.strip() or r.stdout.strip()}"
+        if check:
+            raise RuntimeError(f"Git fehlgeschlagen: {msg}")
+        if not silent_ok:
+            _sync_log(f"⚠️ {msg}")
+    return r
+
 
 def ensure_git_repo():
     """Initialisiert ein Git-Repo auf Render (wo Git fehlt) und
     holt den letzten Stand aus GitHub, damit sync_db_to_git() pushen kann."""
     if not GITHUB_TOKEN:
-        print("[DB-SYNC] Kein GITHUB_TOKEN — Git-Sync deaktiviert", flush=True)
+        _sync_log("Kein GITHUB_TOKEN — Git-Sync deaktiviert")
         return
     cwd = str(BASE)
     git_dir = str(BASE / ".git")
     repo_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/pauldubrownik-code/Projektmanagement.git"
 
-    import subprocess, os, shutil
+    import os, shutil
 
     if not os.path.exists(git_dir):
-        print("[DB-SYNC] Initialisiere Git-Repo...", flush=True)
-        subprocess.run(["git", "init"], cwd=cwd, capture_output=True)
-        subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=cwd, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Kanban Bot"], cwd=cwd, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "bot@kanban.local"], cwd=cwd, capture_output=True)
+        _sync_log("Initialisiere Git-Repo...")
+        try:
+            _run_git(["git", "init"], cwd, check=True)
+            _run_git(["git", "remote", "add", "origin", repo_url], cwd, check=True)
+            _run_git(["git", "config", "user.name", "Kanban Bot"], cwd)
+            _run_git(["git", "config", "user.email", "bot@kanban.local"], cwd)
+        except Exception as e:
+            _sync_log(f"Git-Init fehlgeschlagen: {e}")
+            return
+
         # DB vor dem Reset sichern
-        db_backup = None
-        if KANBAN_DB.exists():
-            db_backup = KANBAN_DB.read_bytes()
-        print("[DB-SYNC] Hole letzten Stand von GitHub...", flush=True)
-        subprocess.run(["git", "fetch", "origin", "main"], cwd=cwd, capture_output=True)
-        subprocess.run(["git", "checkout", "-b", "main"], cwd=cwd, capture_output=True)
-        subprocess.run(["git", "branch", "--set-upstream-to", "origin/main", "main"], cwd=cwd, capture_output=True)
-        # DB wiederherstellen falls vorhanden (vor dem Reset gesichert)
+        db_backup = KANBAN_DB.read_bytes() if KANBAN_DB.exists() else None
+
+        # Versuche von GitHub zu fetchen
+        r = _run_git(["git", "fetch", "origin", "main"], cwd, silent_ok=True)
+        if r.returncode == 0:
+            _run_git(["git", "checkout", "-b", "main", "origin/main"], cwd, check=True)
+            _sync_log("Von GitHub geholt & eingerichtet ✅")
+        else:
+            # Kein Remote-Zugriff — leeres Repo erstellen
+            _run_git(["git", "checkout", "-b", "main"], cwd)
+            _sync_log("Leeres Repo initiiert (kein Remote-Zugriff) ❌")
+
+        # DB wiederherstellen
         if db_backup:
             KANBAN_DB.parent.mkdir(parents=True, exist_ok=True)
             KANBAN_DB.write_bytes(db_backup)
-        # Tabellen sicherstellen (falls DB aus GitHub älter ist)
         ensure_tables()
-        print("[DB-SYNC] Git-Repo bereit ✅", flush=True)
     else:
-        # Bei Folgestarts: einfach pullen
-        subprocess.run(["git", "pull", "--rebase"], cwd=cwd, capture_output=True)
-        print("[DB-SYNC] Git-Repo aktualisiert ✅", flush=True)
+        r = _run_git(["git", "pull", "--rebase"], cwd, silent_ok=True)
+        if r.returncode == 0:
+            _sync_log("Git-Repo aktualisiert ✅")
+        else:
+            _sync_log(f"Git-Pull fehlgeschlagen: {r.stderr.strip()}")
 
 
 ensure_git_repo()
@@ -317,12 +344,13 @@ class KanbanHandler(SimpleHTTPRequestHandler):
         import json, subprocess, os
         status = {"token": bool(GITHUB_TOKEN), "git_dir": os.path.isdir(str(BASE / ".git"))}
         if status["git_dir"]:
-            r = subprocess.run(["git", "remote", "get-url", GIT_REMOTE],
+            r = subprocess.run(["git", "remote", "-v"],
                                capture_output=True, text=True, cwd=str(BASE))
-            status["remote"] = r.stdout.strip() if r.returncode == 0 else r.stderr.strip()
+            status["remote_v"] = r.stdout.strip() or r.stderr.strip()
             r2 = subprocess.run(["git", "status", "--porcelain", str(KANBAN_DB.relative_to(BASE))],
                                 capture_output=True, text=True, cwd=str(BASE))
             status["db_dirty"] = bool(r2.stdout.strip())
+        status["log"] = SYNC_LOG[-20:]  # letzte 20 Log-Einträge
         self.send_json(status)
 
     def do_GET(self):

@@ -1118,7 +1118,7 @@ function openCreateModal() {
       </div>
     </div>
     <label>📁 Projekte</label>
-    <div id="fProjectWrap" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text);min-height:32px"></div>
+    <div id="fProjectWrap" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text);min-height:80px"></div>
     <input type="text" id="fProjectNew" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text)" placeholder="Neues Projekt (mit Komma trennen)...">
     <label>Status</label>
     <select id="fStatus">
@@ -1136,7 +1136,7 @@ function openCreateModal() {
   const pWrap = document.getElementById('fProjectWrap');
   if (pWrap) {
     pWrap.innerHTML = projs.map(p =>
-      `<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer">
+      `<label style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:12px;cursor:pointer">
         <input type="checkbox" value="${escHtml(p)}"> 📁 ${escHtml(p)}
       </label>`
     ).join('') || '<span style="color:var(--text-dim);font-size:11px">Keine Projekte vorhanden — neues unten eintragen</span>';
@@ -1203,7 +1203,7 @@ async function editTask(id) {
       </div>
     </div>
     <label>📁 Projekte</label>
-    <div id="fProjectWrap" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text);min-height:32px"></div>
+    <div id="fProjectWrap" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text);min-height:80px"></div>
     <input type="text" id="fProjectNew" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--input-bg);color:var(--text)" placeholder="Neues Projekt (mit Komma trennen)...">
     <div class="row2">
       <div><label>Status</label>
@@ -1230,7 +1230,7 @@ async function editTask(id) {
   const pWrap = document.getElementById('fProjectWrap');
   if (pWrap) {
     pWrap.innerHTML = allProjs.map(p =>
-      `<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer">
+      `<label style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:12px;cursor:pointer">
         <input type="checkbox" value="${escHtml(p)}" ${tProjs.includes(p)?'checked':''}>
         📁 ${escHtml(p)}
       </label>`

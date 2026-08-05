@@ -147,6 +147,15 @@ def ensure_tables():
             completed_at INTEGER NOT NULL
         )
     """)
+    # KI-Lern-Regeln – lernt aus Benutzereingriffen
+    con.execute("""CREATE TABLE IF NOT EXISTS ki_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        keyword TEXT UNIQUE NOT NULL,
+        project TEXT DEFAULT '',
+        priority TEXT DEFAULT '',
+        estimated_minutes INTEGER DEFAULT 0,
+        corrected_at INTEGER NOT NULL
+    )""")
     con.commit()
     con.close()
 
@@ -299,6 +308,12 @@ def fetch_routine_log(routine_id):
     return [dict(r) for r in rows]
 
 
+def fetch_ki_rules():
+    con = get_db()
+    rows = con.execute("SELECT keyword, project, priority, estimated_minutes FROM ki_rules ORDER BY corrected_at DESC").fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
 def fetch_brainstorms():
     con = get_db()
     rows = con.execute(
@@ -385,8 +400,26 @@ class KanbanHandler(SimpleHTTPRequestHandler):
         elif path.startswith("/api/routines/") and path.endswith("/log"):
             rid = path.split("/api/routines/")[1].split("/log")[0]
             self.send_json({"log": fetch_routine_log(rid)})
+        elif path == "/api/ki-learn":
+            keyword = body.get("keyword", "").strip().lower()
+            if keyword:
+                con = get_db()
+                con.execute("INSERT OR REPLACE INTO ki_rules (keyword, project, priority, estimated_minutes, corrected_at) VALUES (?, ?, ?, ?, ?)",
+                    (keyword,
+                     body.get("project", ""),
+                     body.get("priority", ""),
+                     int(body.get("estimated_minutes", 0)),
+                     int(__import__("time").time())))
+                con.commit()
+                con.close()
+                sync_db_to_git()
+                self.send_json({"status": "ok"})
+            else:
+                self.send_json({"error": "keyword required"}, 400)
         elif path == "/api/brainstorm":
             self.send_json({"entries": fetch_brainstorms()})
+        elif path == "/api/ki-rules":
+            self.send_json({"rules": fetch_ki_rules()})
         elif path.startswith("/api/tasks/"):
             task_id = path.split("/api/tasks/")[1].split("/")[0]
             if task_id:
@@ -786,10 +819,13 @@ h1 span{color:var(--accent);font-weight:400}
 <div id="panel-kanban" class="panel">
   <div class="toolbar">
     <button class="btn btn-primary" onclick="openCreateModal()">+ Neue Karte</button>
-    <button class="btn btn-ghost" onclick="openImportModal()">📥 KI-Assistent</button>
+    <button class="btn btn-ghost" onclick="openImportModal()">📥 Import</button>
     <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:var(--surface);color:var(--text)">
       <option value="">📁 Alle Projekte</option>
     </select>
+    <div style="position:relative;flex:1;min-width:120px">
+      <input id="smartInput" type="text" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:var(--input-bg);color:var(--text)" placeholder="🧠 Aufgabe & ENTER ⏎" onkeydown="if(event.key==='Enter')smartAdd(event.target.value)">
+    </div>
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
   <div id="kanban" class="kanban"><div class="loading"><span class="spinner"></span>Lade …</div></div>
@@ -847,8 +883,8 @@ h1 span{color:var(--accent);font-weight:400}
 <div class="modal-overlay" id="importOverlay" onclick="if(event.target===this)closeImportModal()">
   <div class="modal-content" style="max-width:600px;max-height:80vh;overflow-y:auto">
     <span class="modal-close" onclick="closeImportModal()">&times;</span>
-    <h2>📥 KI-Assistent</h2>
-    <p style="font-size:12px;color:var(--text-dim);margin:0 0 6px">Schreib oder paste deine Aufgaben — die KI erkennt <strong>Projekt, Priorität, Dauer & Status</strong>. Vorschau zeigt dir vor dem Anlegen, was erkannt wurde.</p>
+    <h2>📥 Import & KI-Assistent</h2>
+    <p style="font-size:12px;color:var(--text-dim);margin:0 0 6px">Schreib oder paste deine Aufgaben — die KI erkennt <strong>Projekt, Priorität, Dauer & Status</strong>. Die Vorschau zeigt dir vor dem Anlegen, was erkannt wurde. <span style="color:var(--accent)">✏️</span> Korrekturen merkt sich die KI!</p>
     <textarea id="importText" style="width:100%;min-height:250px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:monospace;background:var(--input-bg);color:var(--text);resize:vertical" placeholder="### 💼 Beruf & Schule
 * Dringend: Mit Chef über Gehaltserhöhung sprechen (30min)
 * !! Arbeitsstunden-System entwickeln (2h)
@@ -1906,7 +1942,80 @@ function toggleTheme(){
   }
 })();
 
-// ── KI-Smart-Import ──
+// ── KI-Assistent mit Lernen ──
+let kiLearnedRules = [];  // wird von /api/ki-rules geladen
+
+async function loadKiRules(){
+  try {
+    const resp = await api('/api/ki-rules');
+    kiLearnedRules = resp.rules || [];
+  } catch(e) { kiLearnedRules = []; }
+}
+
+// Gelernte Regeln überschreiben statische
+function kiErkenneProjektMitLernen(text){
+  const t = text.toLowerCase();
+  // Zuerst gelernte Regeln checken
+  for (const r of kiLearnedRules){
+    if (r.keyword && t.includes(r.keyword.toLowerCase())) return r.project || '';
+  }
+  // Fallback: statische Regeln
+  return kiErkenneProjekt(text);
+}
+function kiErkennePrioMitLernen(text){
+  const t = text.toLowerCase();
+  for (const r of kiLearnedRules){
+    if (r.keyword && t.includes(r.keyword.toLowerCase()) && r.priority) return r.priority;
+  }
+  return kiErkennePrio(text);
+}
+function kiErkenneDauerMitLernen(text){
+  const t = text.toLowerCase();
+  for (const r of kiLearnedRules){
+    if (r.keyword && t.includes(r.keyword.toLowerCase()) && r.estimated_minutes) return r.estimated_minutes;
+  }
+  return kiErkenneDauer(text);
+}
+
+// Lerne aus der tatsächlichen Zuordnung nach dem Erstellen
+async function kiLernenAusErstellten(tasks){
+  for (const t of tasks){
+    if (!t.project) continue;
+    // Extrahiere das erste relevante Keyword aus dem Titel
+    const text = t.title.toLowerCase();
+    // Finde das längste passende Keyword aus der statischen Liste
+    for (const p of KI_PROJEKTE){
+      for (const k of p.keys){
+        if (text.includes(k)){
+          // Nur lernen wenn das erkannte Projekt anders wäre
+          const detected = kiErkenneProjekt(text);
+          if (detected !== t.project){
+            try {
+              await api('/api/ki-learn', {method:'POST', body:JSON.stringify({
+                keyword: k,
+                project: t.project,
+                priority: t.priority || '',
+                estimated_minutes: t.estimated || 0,
+              })});
+            } catch(e) {}
+          }
+          break;
+        }
+      }
+    }
+  }
+  // Neu laden
+  await loadKiRules();
+}
+
+// smartAdd öffnet jetzt den Import-Modal mit vorausgefülltem Text
+function smartAdd(text){
+  if (!text.trim()) return;
+  document.getElementById('importText').value = text;
+  openImportModal();
+  setTimeout(() => previewImport(), 100);
+}
+
 const KI_PROJEKTE = [
   { keys: ['rechnung','konto','abo','versicherung','bank','schulden','geld','überweisen','klarna','adac','revolut','kündigen','paypal','steuer'], name:'🔴 Finanzen & Admin' },
   { keys: ['chef','gehalt','job','schule','bewerbung','website','arbeitgeber','arbeitnehmer','stunden','stundenzettel','claude','mercat','danju','kurs','fortbildung','rettungsschwimmer','erste hilfe'], name:'💼 Beruf & Schule' },
@@ -1969,14 +2078,14 @@ function kiParseTasks(text) {
     }
     if (t.startsWith('*') || t.startsWith('-')) {
       let raw = t.replace(/^[\*\-]\s*/, '').trim();
-      const aiProj = kiErkenneProjekt(raw);
+      const aiProj = kiErkenneProjektMitLernen(raw);
       const project = currentProject || aiProj;
       tasks.push({
         title: kiParseTitle(raw),
         raw: raw,
         project: project,
-        priority: kiErkennePrio(raw),
-        estimated: kiErkenneDauer(raw),
+        priority: kiErkennePrioMitLernen(raw),
+        estimated: kiErkenneDauerMitLernen(raw),
         status: kiErkenneStatus(raw),
       });
     }
@@ -2038,12 +2147,15 @@ async function runImport(){
       progress.innerHTML += `<br>❌ ${escHtml(t.title)}: ${e.message}`;
     }
   }
-  progress.innerHTML = `🎉 ${created} von ${tasks.length} KI-optimierten Aufgaben erstellt! Seite lädt neu …`;
+  progress.innerHTML = `🎉 ${created} von ${tasks.length} Aufgaben erstellt! KI merkt sich Korrekturen …`;
+  // KI lernt aus den erstellten Aufgaben
+  await kiLernenAusErstellten(tasks);
   await loadTasks();
   closeImportModal();
 }
 
 // ── Init ──
+loadKiRules();
 loadTasks();
 </script>
 </body>

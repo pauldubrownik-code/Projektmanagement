@@ -6,6 +6,7 @@ Dann:   http://localhost:8089
 """
 
 import json
+import os
 import sqlite3
 import uuid
 import time
@@ -13,10 +14,10 @@ from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
-HOME = Path.home()
-KANBAN_DB = HOME / ".hermes" / "kanban" / "boards" / "christian" / "kanban.db"
-PORT = 8089
-HOST = "127.0.0.1"
+BASE = Path(__file__).parent.resolve()
+KANBAN_DB = BASE / "data" / "kanban.db"
+PORT = int(os.environ.get("PORT", 8089))
+HOST = "0.0.0.0"
 
 PRIO_LABELS = {1: "hoch", 2: "mittel", 3: "niedrig"}
 PRIO_VALUES = {"hoch": 1, "mittel": 2, "niedrig": 3}

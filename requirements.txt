@@ -1,0 +1,2 @@
+# Keine externen Abhängigkeiten — nutzt nur Python-Standardbibliothek.
+# Diese Datei ist für Render (Build Command) notwendig.

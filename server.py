@@ -309,11 +309,27 @@ class KanbanHandler(SimpleHTTPRequestHandler):
     def _send_auth_challenge(self):
         self.send_response(401)
         self.send_header("WWW-Authenticate", f'Basic realm="{AUTH_REALM}"')
-        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(b"<h1>401 Unauthorized</h1><p>Zugriff nur mit g&uuml;ltigen Anmeldedaten.</p>")
 
+    def _debug_sync(self):
+        """Status des DB-Sync (ohne Auth, nur für Debugging)."""
+        import json, subprocess, os
+        status = {"token": bool(GITHUB_TOKEN), "git_dir": os.path.isdir(str(BASE / ".git"))}
+        if status["git_dir"]:
+            r = subprocess.run(["git", "remote", "get-url", GIT_REMOTE],
+                               capture_output=True, text=True, cwd=str(BASE))
+            status["remote"] = r.stdout.strip() if r.returncode == 0 else r.stderr.strip()
+            r2 = subprocess.run(["git", "status", "--porcelain", str(KANBAN_DB.relative_to(BASE))],
+                                capture_output=True, text=True, cwd=str(BASE))
+            status["db_dirty"] = bool(r2.stdout.strip())
+        self.send_json(status)
+
     def do_GET(self):
+        # Debug-Endpoint ohne Auth (nur Sync-Status, keine Daten)
+        if self.path.rstrip("/") == "/api/debug/sync":
+            self._debug_sync()
+            return
         if not self.require_auth():
             return
         path = self.path.rstrip("/")

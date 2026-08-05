@@ -125,9 +125,15 @@ def ensure_tables():
             started_at INTEGER,
             completed_at INTEGER,
             assignee TEXT DEFAULT '',
-            project_id TEXT DEFAULT ''
+            project_id TEXT DEFAULT '',
+            procedure TEXT DEFAULT ''
         )
     """)
+    # Spalte für bestehende DBs nachrüsten
+    try:
+        con.execute("ALTER TABLE tasks ADD COLUMN procedure TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # Spalte existiert bereits
     con.execute("""
         CREATE TABLE IF NOT EXISTS routines (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,7 +160,7 @@ ensure_tables()
 def fetch_tasks():
     con = get_db()
     rows = con.execute(
-        "SELECT id, title, body, status, priority, created_at, started_at, "
+        "SELECT id, title, body, procedure, status, priority, created_at, started_at, "
         "completed_at, assignee, project_id FROM tasks ORDER BY priority, created_at"
     ).fetchall()
     tasks = [dict(r) for r in rows]
@@ -284,7 +290,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             if task_id:
                 con = get_db()
                 row = con.execute(
-                    "SELECT id, title, body, status, priority, created_at, started_at, "
+                    "SELECT id, title, body, procedure, status, priority, created_at, started_at, "
                     "completed_at, assignee, project_id FROM tasks WHERE id=?", (task_id,)
                 ).fetchone()
                 con.close()
@@ -322,11 +328,12 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             task_id = f"t_{uuid.uuid4().hex[:8]}"
             now = int(time.time())
             project = body.get("project", "").strip()
+            proc = body.get("procedure", "").strip()
             con = get_db()
             con.execute(
-                "INSERT INTO tasks (id, title, body, status, priority, created_at, assignee, started_at, completed_at, project_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, title, desc, status, prio, now, "user", start_ts or None, due_ts or None, project or None),
+                "INSERT INTO tasks (id, title, body, procedure, status, priority, created_at, assignee, started_at, completed_at, project_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, title, desc, proc, status, prio, now, "user", start_ts or None, due_ts or None, project or None),
             )
             con.execute(
                 "INSERT OR REPLACE INTO task_estimates (task_id, estimated_minutes, buffer_percent) VALUES (?, ?, ?)",
@@ -435,6 +442,9 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             if body.get("project") is not None:
                 updates.append("project_id=?")
                 params.append(project.strip() or None)
+            if body.get("procedure") is not None:
+                updates.append("procedure=?")
+                params.append(body.get("procedure", "").strip())
 
             if updates:
                 params.append(task_id)
@@ -569,6 +579,11 @@ h1 span{color:#007FA7;font-weight:400}
 .card.prio-niedrig{border-left-color:#6b7280}
 .card.dragging{opacity:0.4;transform:rotate(2deg)}
 .col-body.drag-over{background:#dbeafe;border-radius:8px;min-height:60px}
+.card-proc{margin-top:6px;font-size:11px}
+.card-proc-toggle{color:#7C3AED;cursor:pointer;font-weight:500;font-size:10px;user-select:none}
+.card-proc-toggle:hover{text-decoration:underline}
+.card-proc-body{display:none;margin-top:4px;padding:6px 8px;background:#f8f0ff;border-radius:4px;color:#444;font-size:11px;line-height:1.5;white-space:pre-wrap}
+.card-proc.expanded .card-proc-body{display:block}
 .card-title{font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:2px;padding-right:50px}
 .card-body{font-size:11px;color:#666;line-height:1.3;margin-top:4px}
 .card-meta{font-size:10px;color:#999;margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
@@ -872,6 +887,7 @@ function renderCard(t) {
     </div>
     <div class="card-title">${escHtml(t.title)}</div>
     ${bodyShort ? `<div class="card-body">${escHtml(bodyShort)}</div>` : ''}
+    ${t.procedure ? `<div class="card-proc"><span class="card-proc-toggle" onclick="event.stopPropagation();this.parentElement.classList.toggle('expanded')">📋 Ablauf <small>(${t.procedure.split('\n').filter(l=>l.trim()).length} Schritte)</small></span><div class="card-proc-body">${escHtml(t.procedure).replace(/\n/g,'<br>')}</div></div>` : ''}
     ${estHtml}
     ${datesHtml}
     <div class="card-meta">
@@ -949,6 +965,8 @@ function openCreateModal() {
     <input type="text" id="fTitle" placeholder="Aufgabe …" autofocus>
     <label>Beschreibung</label>
     <textarea id="fBody" placeholder="Details …"></textarea>
+    <label>📋 Ablauf</label>
+    <textarea id="fProcedure" placeholder="1. Erster Schritt&#10;2. Zweiter Schritt&#10;3. Dritter Schritt" style="min-height:80px;font-family:monospace;font-size:12px"></textarea>
     <div class="row2">
       <div><label>Start</label><input type="date" id="fStart"></div>
       <div><label>Ziel</label><input type="date" id="fDue"></div>
@@ -1014,6 +1032,7 @@ async function createTask() {
   await api('/api/tasks', {method:'POST', body:JSON.stringify({
     title,
     body: document.getElementById('fBody').value.trim(),
+    procedure: document.getElementById('fProcedure').value.trim(),
     priority: document.getElementById('fPrio').value,
     project,
     status: document.getElementById('fStatus').value,
@@ -1038,6 +1057,8 @@ async function editTask(id) {
     <input type="text" id="fTitle" value="${escHtml(t.title)}">
     <label>Beschreibung</label>
     <textarea id="fBody">${escHtml(t.body||'')}</textarea>
+    <label>📋 Ablauf</label>
+    <textarea id="fProcedure" style="min-height:80px;font-family:monospace;font-size:12px">${escHtml(t.procedure||'')}</textarea>
     <div class="row2">
       <div><label>Start</label><input type="date" id="fStart" value="${tsToDateInput(t.started_at)}"></div>
       <div><label>Ziel</label><input type="date" id="fDue" value="${tsToDateInput(t.completed_at)}"></div>
@@ -1103,6 +1124,7 @@ async function saveTask(id) {
   await api('/api/tasks/'+id, {method:'PUT', body:JSON.stringify({
     title: document.getElementById('fTitle').value.trim(),
     body: document.getElementById('fBody').value.trim(),
+    procedure: document.getElementById('fProcedure').value.trim(),
     priority: document.getElementById('fPrio').value,
     project,
     start_date: document.getElementById('fStart').value,

@@ -786,6 +786,7 @@ h1 span{color:var(--accent);font-weight:400}
 <div id="panel-kanban" class="panel">
   <div class="toolbar">
     <button class="btn btn-primary" onclick="openCreateModal()">+ Neue Karte</button>
+    <button class="btn btn-ghost" onclick="openImportModal()">📥 Import</button>
     <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:var(--surface)">
       <option value="">📁 Alle Projekte</option>
     </select>
@@ -839,6 +840,24 @@ h1 span{color:var(--accent);font-weight:400}
     <span class="modal-close" onclick="closeModal()">&times;</span>
     <h2 id="modalTitle">Aufgabe</h2>
     <div id="modalBody"></div>
+  </div>
+</div>
+
+<!-- Import Modal -->
+<div class="modal-overlay" id="importOverlay" onclick="if(event.target===this)closeImportModal()">
+  <div class="modal-content" style="max-width:600px;max-height:80vh;overflow-y:auto">
+    <span class="modal-close" onclick="closeImportModal()">&times;</span>
+    <h2>📥 Aufgaben importieren</h2>
+    <p style="font-size:12px;color:var(--text-dim);margin:0 0 10px">Paste your list. Lines starting with <code>###</code> → project, <code>*</code> → task. Items with <code>!!</code> → ready, <code>[blocked]</code> → blocked.</p>
+    <textarea id="importText" style="width:100%;min-height:300px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:monospace;background:var(--input-bg);color:var(--text);resize:vertical" placeholder="### Projektname&#10;* Aufgabe 1&#10;* !! Aufgabe 2 (wird ready)&#10;* [blocked] Aufgabe 3 (wird blocked)&#10;&#10;### Nächstes Projekt&#10;* ..."></textarea>
+    <div style="margin:8px 0;font-size:12px;color:var(--text-dim)">
+      <label><input type="checkbox" id="importAsRunning" checked> Erstellte Aufgaben auf <strong>ready</strong> setzen</label>
+    </div>
+    <div id="importProgress" style="display:none;font-size:12px;margin:6px 0"></div>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="closeImportModal()">Abbrechen</button>
+      <button class="btn btn-primary" onclick="runImport()">📥 Importieren</button>
+    </div>
   </div>
 </div>
 
@@ -1880,6 +1899,75 @@ function toggleTheme(){
     document.getElementById('themeFab').textContent='☀️';
   }
 })();
+
+// ── Import ──
+function openImportModal(){
+  document.getElementById('importText').value = '';
+  document.getElementById('importProgress').style.display = 'none';
+  document.getElementById('importOverlay').classList.add('show');
+}
+function closeImportModal(){
+  document.getElementById('importOverlay').classList.remove('show');
+}
+async function runImport(){
+  const text = document.getElementById('importText').value;
+  if (!text.trim()) return;
+  const lines = text.split('\n');
+  let currentProject = '';
+  let tasks = [];
+  let taskCount = 0;
+  for (let line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('###')) {
+      currentProject = trimmed.replace(/^###\s*/, '').replace(/^[🔴💼🛠️🏋️🛍️🤝🎬]\s*/, '').trim();
+      continue;
+    }
+    if (trimmed.startsWith('*') || trimmed.startsWith('-')) {
+      let title = trimmed.replace(/^[\*\-]\s*/, '').trim();
+      let status = document.getElementById('importAsRunning').checked ? 'ready' : 'backlog';
+      let isBlocked = false;
+      if (title.startsWith('!!')) { title = title.replace(/^!!\s*/, '').trim(); status = 'ready'; }
+      if (title.startsWith('[blocked]') || title.includes('(blocked)')) {
+        title = title.replace(/^\[blocked\]\s*/, '').replace(/\s*\(blocked\)\s*/, '').trim();
+        isBlocked = true;
+        status = 'blocked';
+      }
+      tasks.push({ title, status, projects: currentProject ? [currentProject] : [] });
+      taskCount++;
+    }
+  }
+  if (tasks.length === 0) { alert('Keine Aufgaben gefunden — benutze ### für Projekte und * für Aufgaben.'); return; }
+
+  const progress = document.getElementById('importProgress');
+  progress.style.display = 'block';
+  progress.innerHTML = `0 / ${tasks.length} erstellt …`;
+
+  let created = 0;
+  for (const t of tasks) {
+    try {
+      await api('/api/tasks', {method:'POST', body:JSON.stringify({
+        title: t.title,
+        status: t.status,
+        projects: t.projects,
+        priority: 'mittel',
+        body: '',
+        procedure: '',
+        start_date: '',
+        due_date: '',
+        estimated_minutes: 0,
+        buffer_percent: 20,
+      })});
+      created++;
+      progress.innerHTML = `${created} / ${tasks.length} erstellt …`;
+    } catch(e) {
+      progress.innerHTML += `<br>❌ ${escHtml(t.title)}: ${e.message}`;
+    }
+  }
+  progress.innerHTML = `✅ ${created} von ${tasks.length} Aufgaben importiert! Seite lädt neu …`;
+  await loadTasks();
+  closeImportModal();
+}
 
 // ── Init ──
 loadTasks();

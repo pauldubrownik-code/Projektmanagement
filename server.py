@@ -212,13 +212,16 @@ def ensure_git_repo():
 
         # Versuche von GitHub zu fetchen
         r = _run_git(["git", "fetch", "origin", "main"], cwd, silent_ok=True)
-        if r.returncode == 0:
-            _run_git(["git", "checkout", "-b", "main", "origin/main"], cwd, check=True)
-            _sync_log("Von GitHub geholt & eingerichtet ✅")
-        else:
-            # Kein Remote-Zugriff — leeres Repo erstellen
+        try:
+            if r.returncode == 0:
+                _run_git(["git", "checkout", "-f", "-b", "main", "origin/main"], cwd, check=True)
+                _sync_log("Von GitHub geholt & eingerichtet ✅")
+            else:
+                _run_git(["git", "checkout", "-b", "main"], cwd)
+                _sync_log("Leeres Repo initiiert (kein Remote-Zugriff) ❌")
+        except Exception as e:
+            _sync_log(f"Checkout fehlgeschlagen: {e} — initiiere leeres Repo")
             _run_git(["git", "checkout", "-b", "main"], cwd)
-            _sync_log("Leeres Repo initiiert (kein Remote-Zugriff) ❌")
 
         # DB wiederherstellen
         if db_backup:
@@ -233,7 +236,10 @@ def ensure_git_repo():
             _sync_log(f"Git-Pull fehlgeschlagen: {r.stderr.strip()}")
 
 
-ensure_git_repo()
+try:
+    ensure_git_repo()
+except Exception as e:
+    _sync_log(f"ensure_git_repo() komplett fehlgeschlagen: {e}")
 
 
 def fetch_tasks():

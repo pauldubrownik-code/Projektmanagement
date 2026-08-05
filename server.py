@@ -38,14 +38,13 @@ def sync_db_to_git():
     try:
         import subprocess, os
         cwd = str(BASE)
-        # Token in Remote-URL einbetten
-        remote_url = subprocess.run(
-            ["git", "remote", "get-url", GIT_REMOTE],
-            capture_output=True, text=True, cwd=cwd
-        ).stdout.strip()
-        if not remote_url:
+        # Remote-URL holen und Token einbetten
+        r = subprocess.run(["git", "remote", "get-url", GIT_REMOTE],
+                           capture_output=True, text=True, cwd=cwd)
+        if r.returncode != 0:
             return
-        authed_url = remote_url.replace("https://", f"https://x-access-token:{GITHUB_TOKEN}@")
+        raw_url = r.stdout.strip()
+        authed_url = raw_url.replace("https://", f"https://x-access-token:{GITHUB_TOKEN}@")
         subprocess.run(["git", "remote", "set-url", GIT_REMOTE, authed_url],
                        capture_output=True, cwd=cwd)
         subprocess.run(["git", "add", str(KANBAN_DB.relative_to(BASE))],
@@ -54,16 +53,18 @@ def sync_db_to_git():
                              capture_output=True, cwd=cwd)
         if res.returncode == 0:
             return  # nichts geändert
-        subprocess.run(["git", "commit", "-m", "auto-sync DB [ci skip]"],
-                       capture_output=True, cwd=cwd,
-                       env={**os.environ, "GIT_AUTHOR_NAME": "Kanban Bot",
-                            "GIT_AUTHOR_EMAIL": "bot@kanban.local",
-                            "GIT_COMMITTER_NAME": "Kanban Bot",
-                            "GIT_COMMITTER_EMAIL": "bot@kanban.local"})
-        subprocess.run(["git", "push", GIT_REMOTE, GIT_BRANCH],
-                       capture_output=True, cwd=cwd)
-    except Exception:
-        pass  # Silent fail — App läuft trotzdem
+        r = subprocess.run(["git", "commit", "-m", "auto-sync DB [ci skip]"],
+                           capture_output=True, text=True, cwd=cwd,
+                           env={**os.environ, "GIT_AUTHOR_NAME": "Kanban Bot",
+                                "GIT_AUTHOR_EMAIL": "bot@kanban.local",
+                                "GIT_COMMITTER_NAME": "Kanban Bot",
+                                "GIT_COMMITTER_EMAIL": "bot@kanban.local"})
+        r2 = subprocess.run(["git", "push", "origin", "main"],
+                            capture_output=True, text=True, cwd=cwd)
+        if r2.returncode != 0:
+            print(f"[DB-SYNC] Push fehlgeschlagen: {r2.stderr.strip()}", flush=True)
+    except Exception as e:
+        print(f"[DB-SYNC] Fehler: {e}", flush=True)
 
 PRIO_LABELS = {1: "hoch", 2: "mittel", 3: "niedrig"}
 PRIO_VALUES = {"hoch": 1, "mittel": 2, "niedrig": 3}

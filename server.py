@@ -819,13 +819,9 @@ h1 span{color:var(--accent);font-weight:400}
 <div id="panel-kanban" class="panel">
   <div class="toolbar">
     <button class="btn btn-primary" onclick="openCreateModal()">+ Neue Karte</button>
-    <button class="btn btn-ghost" onclick="openImportModal()">📥 Import</button>
     <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:var(--surface);color:var(--text)">
       <option value="">📁 Alle Projekte</option>
     </select>
-    <div style="position:relative;flex:1;min-width:120px">
-      <input id="smartInput" type="text" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:var(--input-bg);color:var(--text)" placeholder="🧠 Aufgabe & ENTER ⏎" onkeydown="if(event.key==='Enter')smartAdd(event.target.value)">
-    </div>
     <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
   </div>
   <div id="kanban" class="kanban"><div class="loading"><span class="spinner"></span>Lade …</div></div>
@@ -2008,14 +2004,69 @@ async function kiLernenAusErstellten(tasks){
   await loadKiRules();
 }
 
-// smartAdd öffnet jetzt den Import-Modal mit vorausgefülltem Text
-function smartAdd(text){
-  if (!text.trim()) return;
-  document.getElementById('importText').value = text;
-  openImportModal();
-  setTimeout(() => previewImport(), 100);
+// ── KI-Assistent mit Lernen ──
+let kiLearnedRules = [];  // wird von /api/ki-rules geladen
+
+async function loadKiRules(){
+  try {
+    const resp = await api('/api/ki-rules');
+    kiLearnedRules = resp.rules || [];
+  } catch(e) { kiLearnedRules = []; }
 }
 
+// Gelernte Regeln überschreiben statische
+function kiErkenneProjektMitLernen(text){
+  const t = text.toLowerCase();
+  // Zuerst gelernte Regeln checken
+  for (const r of kiLearnedRules){
+    if (r.keyword && t.includes(r.keyword.toLowerCase())) return r.project || '';
+  }
+  // Fallback: statische Regeln
+  return kiErkenneProjekt(text);
+}
+function kiErkennePrioMitLernen(text){
+  const t = text.toLowerCase();
+  for (const r of kiLearnedRules){
+    if (r.keyword && t.includes(r.keyword.toLowerCase()) && r.priority) return r.priority;
+  }
+  return kiErkennePrio(text);
+}
+function kiErkenneDauerMitLernen(text){
+  const t = text.toLowerCase();
+  for (const r of kiLearnedRules){
+    if (r.keyword && t.includes(r.keyword.toLowerCase()) && r.estimated_minutes) return r.estimated_minutes;
+  }
+  return kiErkenneDauer(text);
+}
+
+// Lerne aus der tatsächlichen Zuordnung nach dem Erstellen
+async function kiLernenAusErstellten(tasks){
+  for (const t of tasks){
+    if (!t.project) continue;
+    const text = t.title.toLowerCase();
+    for (const p of KI_PROJEKTE){
+      for (const k of p.keys){
+        if (text.includes(k)){
+          const detected = kiErkenneProjekt(text);
+          if (detected !== t.project){
+            try {
+              await api('/api/ki-learn', {method:'POST', body:JSON.stringify({
+                keyword: k,
+                project: t.project,
+                priority: t.priority || '',
+                estimated_minutes: t.estimated || 0,
+              })});
+            } catch(e) {}
+          }
+          break;
+        }
+      }
+    }
+  }
+  await loadKiRules();
+}
+
+// ── Init ──
 const KI_PROJEKTE = [
   { keys: ['rechnung','konto','abo','versicherung','bank','schulden','geld','überweisen','klarna','adac','revolut','kündigen','paypal','steuer'], name:'🔴 Finanzen & Admin' },
   { keys: ['chef','gehalt','job','schule','bewerbung','website','arbeitgeber','arbeitnehmer','stunden','stundenzettel','claude','mercat','danju','kurs','fortbildung','rettungsschwimmer','erste hilfe'], name:'💼 Beruf & Schule' },

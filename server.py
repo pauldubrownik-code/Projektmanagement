@@ -2004,69 +2004,6 @@ async function kiLernenAusErstellten(tasks){
   await loadKiRules();
 }
 
-// ── KI-Assistent mit Lernen ──
-let kiLearnedRules = [];  // wird von /api/ki-rules geladen
-
-async function loadKiRules(){
-  try {
-    const resp = await api('/api/ki-rules');
-    kiLearnedRules = resp.rules || [];
-  } catch(e) { kiLearnedRules = []; }
-}
-
-// Gelernte Regeln überschreiben statische
-function kiErkenneProjektMitLernen(text){
-  const t = text.toLowerCase();
-  // Zuerst gelernte Regeln checken
-  for (const r of kiLearnedRules){
-    if (r.keyword && t.includes(r.keyword.toLowerCase())) return r.project || '';
-  }
-  // Fallback: statische Regeln
-  return kiErkenneProjekt(text);
-}
-function kiErkennePrioMitLernen(text){
-  const t = text.toLowerCase();
-  for (const r of kiLearnedRules){
-    if (r.keyword && t.includes(r.keyword.toLowerCase()) && r.priority) return r.priority;
-  }
-  return kiErkennePrio(text);
-}
-function kiErkenneDauerMitLernen(text){
-  const t = text.toLowerCase();
-  for (const r of kiLearnedRules){
-    if (r.keyword && t.includes(r.keyword.toLowerCase()) && r.estimated_minutes) return r.estimated_minutes;
-  }
-  return kiErkenneDauer(text);
-}
-
-// Lerne aus der tatsächlichen Zuordnung nach dem Erstellen
-async function kiLernenAusErstellten(tasks){
-  for (const t of tasks){
-    if (!t.project) continue;
-    const text = t.title.toLowerCase();
-    for (const p of KI_PROJEKTE){
-      for (const k of p.keys){
-        if (text.includes(k)){
-          const detected = kiErkenneProjekt(text);
-          if (detected !== t.project){
-            try {
-              await api('/api/ki-learn', {method:'POST', body:JSON.stringify({
-                keyword: k,
-                project: t.project,
-                priority: t.priority || '',
-                estimated_minutes: t.estimated || 0,
-              })});
-            } catch(e) {}
-          }
-          break;
-        }
-      }
-    }
-  }
-  await loadKiRules();
-}
-
-// ── Init ──
 const KI_PROJEKTE = [
   { keys: ['rechnung','konto','abo','versicherung','bank','schulden','geld','überweisen','klarna','adac','revolut','kündigen','paypal','steuer'], name:'🔴 Finanzen & Admin' },
   { keys: ['chef','gehalt','job','schule','bewerbung','website','arbeitgeber','arbeitnehmer','stunden','stundenzettel','claude','mercat','danju','kurs','fortbildung','rettungsschwimmer','erste hilfe'], name:'💼 Beruf & Schule' },

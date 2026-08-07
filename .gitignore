@@ -17,3 +17,7 @@ Thumbs.db
 
 # No need for Caddyfile on Render
 Caddyfile
+
+# SQLite WAL files
+kanban.db-shm
+kanban.db-wal

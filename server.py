@@ -459,22 +459,6 @@ class KanbanHandler(SimpleHTTPRequestHandler):
         elif path.startswith("/api/routines/") and path.endswith("/log"):
             rid = path.split("/api/routines/")[1].split("/log")[0]
             self.send_json({"log": fetch_routine_log(rid)})
-        elif path == "/api/ki-learn":
-            keyword = body.get("keyword", "").strip().lower()
-            if keyword:
-                con = get_db()
-                con.execute("INSERT OR REPLACE INTO ki_rules (keyword, project, priority, estimated_minutes, corrected_at) VALUES (?, ?, ?, ?, ?)",
-                    (keyword,
-                     body.get("project", ""),
-                     body.get("priority", ""),
-                     int(body.get("estimated_minutes", 0)),
-                     int(__import__("time").time())))
-                con.commit()
-                con.close()
-                sync_db_to_git()
-                self.send_json({"status": "ok"})
-            else:
-                self.send_json({"error": "keyword required"}, 400)
         elif path == "/api/brainstorm":
             self.send_json({"entries": fetch_brainstorms()})
         elif path == "/api/ki-rules":
@@ -587,7 +571,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             now = int(time.time())
             con = get_db()
             con.execute("INSERT INTO brainstorm (content, project, processed, created_at) VALUES (?, ?, 0, ?)",
-                        (content, project, now))
+                        (content, project_ids_str, now))
             con.commit()
             con.close()
             sync_db_to_git()

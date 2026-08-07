@@ -483,7 +483,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
         elif path == "/api/habits":
             con = get_db()
             cur = con.execute("SELECT * FROM habits ORDER BY id")
-            habits = cur.fetchall()
+            habits = [dict(r) for r in cur.fetchall()]
             today = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
             for h in habits:
                 cur2 = con.execute("SELECT id FROM habit_logs WHERE habit_id=? AND log_date=?", (h["id"], today))
@@ -494,7 +494,7 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             ws = _week_start_ts()
             con = get_db()
             cur = con.execute("SELECT * FROM weekly_goals WHERE week_start=? ORDER BY id", (ws,))
-            self.send_json({"goals": cur.fetchall()})
+            self.send_json({"goals": [dict(r) for r in cur.fetchall()]})
             con.close()
         elif path == "/api/revenue":
             ms = _month_start_ts()
@@ -506,11 +506,12 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             cur2 = con.execute("SELECT SUM(amount) as total FROM revenue WHERE month=?", (conv_month,))
             total_row = cur2.fetchone()
             con.close()
-            self.send_json({"total": total_row["total"] if total_row and total_row["total"] else 0, "by_source": sources})
+            sources_dict = [dict(s) for s in sources]
+            self.send_json({"total": total_row["total"] if total_row and total_row["total"] else 0, "by_source": sources_dict})
         elif path == "/api/important-emails":
             con = get_db()
             cur = con.execute("SELECT * FROM important_emails ORDER BY created_at DESC LIMIT 10")
-            self.send_json({"emails": cur.fetchall()})
+            self.send_json({"emails": [dict(r) for r in cur.fetchall()]})
             con.close()
         elif path.startswith("/api/tasks/"):
             task_id = path.split("/api/tasks/")[1].split("/")[0]
@@ -647,7 +648,18 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             ws = _week_start_ts()
             con = get_db()
             con.execute("INSERT INTO weekly_goals (title, icon, target_value, current_value, unit, week_start) VALUES (?,?,?,?,?,?)",
-                        (body["title"], body.get("icon","🎯"), body.get("target",1), 0, body.get("unit","x"), ws))
+                        (body["title"], body.get("icon","🎯"), body.get("target_value") if body.get("target_value") is not None else 1, body.get("current_value") if body.get("current_value") is not None else 0, body.get("unit","x"), ws))
+            con.commit()
+            con.close()
+            sync_db_to_git()
+            self.send_json({"ok": True})
+        # ── Dashboard: POST goal complete (increment) ──
+        elif path == "/api/weekly-goals/complete":
+            if not body or body.get("id") is None:
+                self.send_json({"error": "id required"}, 400)
+                return
+            con = get_db()
+            con.execute("UPDATE weekly_goals SET current_value = MIN(current_value + 1, target_value) WHERE id=?", (body["id"],))
             con.commit()
             con.close()
             sync_db_to_git()
@@ -1035,7 +1047,7 @@ body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--tex
     <div class="card"><div class="phdr"><span class="pt">Kalender</span></div><div class="cal-m" id="calM"></div></div>
     <div class="card"><div class="phdr"><span class="pt">Habits</span><span class="pc" id="cHb">0</span></div><div id="hList"></div><div class="ha"><input id="nHi" placeholder="Neues Habit ..." onkeydown="if(event.key==='Enter')aHb()"><button onclick="aHb()">+</button></div></div>
     <div class="card"><div class="phdr"><span class="pt">Wochenziele</span></div><div id="gList"><div class="em2">Keine</div></div></div>
-    <div class="card"><div class="phdr"><span class="pt">Einnahmen</span></div><div class="rt" id="revT">0,00</div><div class="rl">Diesen Monat</div><div id="revS"></div></div>
+    <div class="card"><div class="phdr"><span class="pt">Einnahmen</span></div><div class="rt" id="revT">0,00</div><div class="rl">Diesen Monat</div><div id="revS"></div><div class="ha"><input id="revSi" placeholder="Quelle ..." style="width:35%"><input id="revAi" type="number" step="0.01" min="0" placeholder="Betrag ..." style="width:30%"><button onclick="aRev()">+</button></div></div>
     <div class="card"><div class="phdr"><span class="pt">Wichtige Mails</span><span class="pc" id="cEm">0</span></div><div id="eList"><div class="em2">Keine</div></div></div>
   </div>
 </div>
@@ -1392,6 +1404,19 @@ function tTh(){localStorage.setItem('lt',document.getElementById('thT').checked?
 // Init
 if(localStorage.getItem('lt')==='light'){document.body.style.background='#fff';document.body.style.color='#111';document.getElementById('thT').checked=false}
 lT();setInterval(lT,60000)
+
+async function aRev(){
+  const s=document.getElementById('revSi').value.trim();
+  const a=parseFloat(document.getElementById('revAi').value);
+  if(!s||!a)return;
+  await ap('/api/revenue',{method:'POST',body:JSON.stringify({source:s,amount:a})});
+  document.getElementById('revSi').value='';document.getElementById('revAi').value='';
+  const rd=await ap('/api/revenue');
+  document.getElementById('revT').innerHTML=Number(rd.total).toLocaleString('de-DE',{minimumFractionDigits:2})+' €';
+  const co=document.getElementById('revS');
+  const ss=rd.by_source||[];
+  co.innerHTML=ss.length?ss.map(function(sv){return '<div class="rs"><span class="rn">'+esc(sv.source)+'</span><span class="ra">'+Number(sv.total).toFixed(2).replace('.',',')+' €</span></div>'}).join(''):'<div class="em2">Keine</div>';
+}
 </script>
 </body>
 </html>"""

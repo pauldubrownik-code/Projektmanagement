@@ -10,7 +10,12 @@ import os
 import sqlite3
 import uuid
 import time
-from datetime import datetime
+import base64
+import hashlib
+import hmac
+import urllib.request
+import urllib.parse
+from datetime import datetime, timedelta
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
@@ -28,6 +33,13 @@ AUTH_REALM = "Projektmanagement"
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GIT_REMOTE = "origin"
 GIT_BRANCH = "main"
+
+# ── Google Calendar OAuth ──
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+BASE_URL = os.environ.get("BASE_URL", "")
+GOOGLE_SCOPES = "https://www.googleapis.com/auth/calendar.readonly"
+GOOGLE_TOKEN_FILE = BASE / "data" / "google-tokens.json"
 
 
 def sync_db_to_git():
@@ -215,8 +227,156 @@ def ensure_tables():
         estimated_minutes INTEGER DEFAULT 0,
         corrected_at INTEGER NOT NULL
     )""")
+    # Nutrition / Meals
+    con.execute("""CREATE TABLE IF NOT EXISTS meals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        protein REAL DEFAULT 0,
+        fat REAL DEFAULT 0,
+        carbs REAL DEFAULT 0,
+        calories REAL DEFAULT 0,
+        meal_date TEXT NOT NULL,
+        meal_type TEXT DEFAULT 'snack',
+        created_at INTEGER DEFAULT (strftime('%s','now'))
+    )""")
+    # Task stars (CRM → Key To-Dos)
+    con.execute("""CREATE TABLE IF NOT EXISTS task_stars (
+        task_id TEXT PRIMARY KEY,
+        starred INTEGER DEFAULT 0,
+        starred_at INTEGER
+    )""")
+    # Streaks tracking
+    con.execute("""CREATE TABLE IF NOT EXISTS streaks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        current_streak INTEGER DEFAULT 0,
+        longest_streak INTEGER DEFAULT 0,
+        last_log_date TEXT,
+        updated_at INTEGER DEFAULT (strftime('%s','now'))
+    )""")
+    # Monthly goals (neben weekly_goals)
+    con.execute("""CREATE TABLE IF NOT EXISTS monthly_goals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        icon TEXT DEFAULT '🎯',
+        target_value REAL DEFAULT 1,
+        current_value REAL DEFAULT 0,
+        unit TEXT DEFAULT 'x',
+        month TEXT NOT NULL,
+        created_at INTEGER DEFAULT (strftime('%s','now'))
+    )""")
     con.commit()
     con.close()
+
+
+# ── Google Calendar Helpers ──
+def google_load_tokens():
+    if GOOGLE_TOKEN_FILE.exists():
+        with open(GOOGLE_TOKEN_FILE) as f:
+            return json.load(f)
+    return {}
+
+def google_save_tokens(tokens):
+    GOOGLE_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(GOOGLE_TOKEN_FILE, "w") as f:
+        json.dump(tokens, f, indent=2)
+
+def google_auth_url():
+    if not GOOGLE_CLIENT_ID:
+        return None
+    params = urllib.parse.urlencode({
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": f"{BASE_URL}/api/auth/google/callback",
+        "response_type": "code",
+        "scope": GOOGLE_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+    })
+    return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
+
+def google_exchange_code(code):
+    data = urllib.parse.urlencode({
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": f"{BASE_URL}/api/auth/google/callback",
+        "grant_type": "authorization_code",
+    }).encode()
+    req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(req) as resp:
+        tokens = json.loads(resp.read())
+    google_save_tokens(tokens)
+    return tokens
+
+def google_refresh_token():
+    tokens = google_load_tokens()
+    if not tokens.get("refresh_token"):
+        return None
+    data = urllib.parse.urlencode({
+        "refresh_token": tokens["refresh_token"],
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "grant_type": "refresh_token",
+    }).encode()
+    req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            new_tokens = json.loads(resp.read())
+        tokens.update(new_tokens)
+        google_save_tokens(tokens)
+        return tokens.get("access_token")
+    except Exception as e:
+        print(f"[GCAL] Refresh failed: {e}")
+        return None
+
+def google_fetch_events(calendar_id="primary", max_results=20):
+    access = google_refresh_token()
+    if not access:
+        return None
+    tokens = google_load_tokens()
+    at = tokens.get("access_token") or access
+    now = datetime.utcnow().isoformat() + "Z"
+    later = (datetime.utcnow() + timedelta(days=14)).isoformat() + "Z"
+    url = f"https://www.googleapis.com/calendar/v3/calendars/{urllib.parse.quote(calendar_id, safe='')}/events?" + urllib.parse.urlencode({
+        "timeMin": now,
+        "timeMax": later,
+        "maxResults": max_results,
+        "singleEvents": "true",
+        "orderBy": "startTime",
+    })
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {at}"})
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        print(f"[GCAL] Fetch error: {e}")
+        return None
+
+def google_list_calendars():
+    """List all calendars to find personal vs family."""
+    access = google_refresh_token()
+    if not access:
+        return None
+    tokens = google_load_tokens()
+    at = tokens.get("access_token") or access
+    req = urllib.request.Request(
+        "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+        headers={"Authorization": f"Bearer {at}"},
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        print(f"[GCAL] List calendars error: {e}")
+        return None
 
 
 ensure_tables()
@@ -516,6 +676,97 @@ class KanbanHandler(SimpleHTTPRequestHandler):
                 self.send_json(t, 200 if row else 404)
             else:
                 self.send_json({"error": "missing id"}, 400)
+        elif path == "/api/auth/google":
+            if not GOOGLE_CLIENT_ID:
+                self.send_json({"connected": False, "error": "Google nicht konfiguriert"})
+                return
+            tokens = google_load_tokens()
+            if tokens.get("access_token"):
+                self.send_json({"connected": True, "auth_url": None})
+            else:
+                url = google_auth_url()
+                self.send_json({"connected": False, "auth_url": url})
+        elif path == "/api/auth/google/callback":
+            params = urllib.parse.parse_qs(self.path.split("?")[1] if "?" in self.path else "")
+            code = params.get("code", [None])[0]
+            error = params.get("error", [None])[0]
+            if error:
+                self.send_html(f"<html><body><h1>Fehler</h1><p>{error}</p><a href='/'>Zurück</a></body></html>")
+                return
+            if code:
+                try:
+                    google_exchange_code(code)
+                    self.send_html("<html><body><h1>✅ Verbunden!</h1><p>Google Kalender ist jetzt verbunden. <a href='/'>Zum Dashboard</a></p><script>setTimeout(function(){window.location.href='/'},2000)</script></body></html>")
+                except Exception as e:
+                    self.send_html(f"<html><body><h1>❌ Fehler</h1><p>{e}</p><a href='/'>Zurück</a></body></html>")
+            else:
+                self.send_html("<html><body><h1>Fehler</h1><p>Kein Code erhalten</p><a href='/'>Zurück</a></body></html>")
+        elif path == "/api/google-calendar":
+            cal_type = urllib.parse.parse_qs(self.path.split("?")[1] if "?" in self.path else "").get("type", ["personal"])[0]
+            events = google_fetch_events("primary" if cal_type == "personal" else cal_type)
+            if events is None:
+                tok = google_load_tokens()
+                self.send_json({"connected": bool(tok.get("access_token")), "events": [], "error": None if tok.get("access_token") else "not_connected"})
+            else:
+                items = []
+                for ev in events.get("items", []):
+                    start = ev.get("start", {})
+                    items.append({
+                        "id": ev.get("id"),
+                        "summary": ev.get("summary", "Ohne Titel"),
+                        "start": start.get("dateTime", start.get("date", "")),
+                        "allDay": "date" in start,
+                        "location": ev.get("location", ""),
+                        "description": ev.get("description", ""),
+                    })
+                self.send_json({"connected": True, "events": items, "error": None})
+        elif path == "/api/google-calendars":
+            data = google_list_calendars()
+            if data is None:
+                self.send_json({"calendars": []})
+            else:
+                cals = [{"id": c["id"], "name": c.get("summary",""), "primary": c.get("primary",False), "backgroundColor": c.get("backgroundColor","#039be5")} for c in data.get("items",[])]
+                self.send_json({"calendars": cals})
+        elif path == "/api/meals":
+            con = get_db()
+            cur = con.execute("SELECT * FROM meals ORDER BY created_at DESC LIMIT 50")
+            self.send_json({"meals": [dict(r) for r in cur.fetchall()]})
+            con.close()
+        elif path == "/api/meals/today":
+            today = datetime.now().strftime("%Y-%m-%d")
+            con = get_db()
+            cur = con.execute("SELECT * FROM meals WHERE meal_date=? ORDER BY created_at", (today,))
+            meals = [dict(r) for r in cur.fetchall()]
+            totals = {"protein": 0, "fat": 0, "carbs": 0, "calories": 0}
+            for m in meals:
+                totals["protein"] += m["protein"]
+                totals["fat"] += m["fat"]
+                totals["carbs"] += m["carbs"]
+                totals["calories"] += m["calories"]
+            con.close()
+            self.send_json({"meals": meals, "totals": totals})
+        elif path == "/api/key-todos":
+            con = get_db()
+            cur = con.execute("""
+                SELECT t.*, s.starred, s.starred_at 
+                FROM tasks t 
+                JOIN task_stars s ON t.id = s.task_id 
+                WHERE s.starred = 1 AND t.status != 'completed'
+                ORDER BY s.starred_at DESC
+            """)
+            self.send_json({"todos": [dict(r) for r in cur.fetchall()]})
+            con.close()
+        elif path == "/api/streaks":
+            con = get_db()
+            cur = con.execute("SELECT * FROM streaks ORDER BY current_streak DESC")
+            self.send_json({"streaks": [dict(r) for r in cur.fetchall()]})
+            con.close()
+        elif path == "/api/monthly-goals":
+            this_month = datetime.now().strftime("%Y-%m")
+            con = get_db()
+            cur = con.execute("SELECT * FROM monthly_goals WHERE month=? ORDER BY id", (this_month,))
+            self.send_json({"goals": [dict(r) for r in cur.fetchall()]})
+            con.close()
         else:
             self.send_html(INDEX_HTML)
 
@@ -692,6 +943,44 @@ class KanbanHandler(SimpleHTTPRequestHandler):
             con.close()
             sync_db_to_git()
             self.send_json({"ok": True})
+
+        # ── LiveOS: POST meal ──
+        elif path == "/api/meals":
+            if not body or not body.get("name"):
+                self.send_json({"error": "name required"}, 400)
+                return
+            con = get_db()
+            today = datetime.now().strftime("%Y-%m-%d")
+            con.execute(
+                "INSERT INTO meals (name, protein, fat, carbs, calories, meal_date) VALUES (?,?,?,?,?,?)",
+                (body["name"],
+                 float(body.get("protein", 0)),
+                 float(body.get("fat", 0)),
+                 float(body.get("carbs", 0)),
+                 float(body.get("calories", 0)),
+                 body.get("meal_date", today)),
+            )
+            con.commit()
+            con.close()
+            sync_db_to_git()
+            self.send_json({"ok": True})
+
+        # ── LiveOS: POST star task ──
+        elif path.startswith("/api/tasks/") and path.endswith("/star"):
+            task_id = path.split("/api/tasks/")[1].split("/star")[0]
+            con = get_db()
+            cur = con.execute("SELECT starred FROM task_stars WHERE task_id=?", (task_id,))
+            row = cur.fetchone()
+            if row and row["starred"]:
+                con.execute("DELETE FROM task_stars WHERE task_id=?", (task_id,))
+            else:
+                con.execute("INSERT OR REPLACE INTO task_stars (task_id, starred, starred_at) VALUES (?,1,?)",
+                            (task_id, int(time.time())))
+            con.commit()
+            con.close()
+            sync_db_to_git()
+            self.send_json({"ok": True})
+
         else:
             self.send_json({"error": "not found"}, 404)
 
@@ -987,6 +1276,53 @@ body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--tex
 .sp{display:inline-block;width:20px;height:20px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:sp .6s linear infinite;margin-right:8px;vertical-align:middle}
 @keyframes sp{to{transform:rotate(360deg)}}
 .tb{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+/* ── LiveOS 3‑Column Dashboard ── */
+.d3{display:grid;grid-template-columns:1fr 1.5fr 1fr;gap:16px;align-items:start;max-width:1400px;margin:0 auto}
+.d3 .c{border-radius:14px;background:var(--surface);border:1px solid var(--border);overflow:hidden;transition:.2s}
+.d3 .c:hover{border-color:var(--border2)}
+.d3 .ch{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border2);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--dim)}
+.d3 .cb{padding:12px 16px 16px}
+.d3 .hc{background:linear-gradient(135deg,var(--surf2),var(--surface));display:flex;align-items:center;gap:14px;padding:16px}
+.d3 .hc .av{width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:22px;color:#0a0e17;font-weight:700;flex-shrink:0}
+.d3 .hc .on{width:10px;height:10px;border-radius:50%;background:var(--accent);display:inline-block;box-shadow:0 0 8px var(--accent);margin-left:6px;animation:pu 2s infinite}
+@keyframes pu{0%,100%{opacity:1}50%{opacity:.4}}
+.d3 .hc .hn{font-size:16px;font-weight:600;display:flex;align-items:center;gap:4px}
+.d3 .hc .hs{font-size:11px;color:var(--dim);margin-top:2px}
+.d3 .hc .stk{display:flex;gap:12px;margin-left:auto}
+.d3 .hc .stk div{text-align:center}
+.d3 .hc .stk .sn{font-size:18px;font-weight:700;color:var(--accent)}
+.d3 .hc .stk .sl{font-size:9px;color:var(--faint);text-transform:uppercase;letter-spacing:.3px}
+.d3 .fin{display:flex;justify-content:space-between;align-items:center;padding:8px 0}
+.d3 .fin .fn{font-size:22px;font-weight:700;color:var(--accent)}
+.d3 .fin .fl{font-size:11px;color:var(--dim)}
+.d3 .fin .fh{font-size:10px;color:var(--faint);cursor:pointer;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:transparent;font-family:inherit;transition:.2s}
+.d3 .fin .fh:hover{background:var(--glow);color:var(--accent)}
+.d3 .calh{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.d3 .calh .ct{font-size:11px;font-weight:500;color:var(--dim);padding:4px 10px;border-radius:6px;border:1px solid var(--border);cursor:pointer;background:transparent;font-family:inherit;transition:.2s}
+.d3 .calh .ct.act{background:var(--accent-dim);color:var(--accent);border-color:var(--accent)}
+.d3 .calh .ct:hover{border-color:var(--accent)}
+.d3 .calt{font-size:10px;color:var(--faint);display:grid;grid-template-columns:repeat(7,1fr);gap:1px;margin-bottom:4px;text-align:center;padding:2px 0;font-weight:500}
+.d3 .cald{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.d3 .cald div{text-align:center;padding:4px 0;border-radius:4px;font-size:11px;color:var(--dim);cursor:pointer;transition:.2s}
+.d3 .cald div:hover{background:var(--surf3)}
+.d3 .cald .td{background:var(--accent);color:#0a0e17;font-weight:600}
+.d3 .cald .ht{color:var(--accent);font-weight:600}
+.d3 .cald .ge{background:linear-gradient(135deg,var(--accent-dim),transparent);color:var(--accent)}
+.d3 .ev{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;background:var(--surf2);margin-bottom:4px;cursor:pointer;transition:.2s;font-size:12px}
+.d3 .ev:hover{background:var(--surf3)}
+.d3 .ev .ed{width:3px;border-radius:2px;flex-shrink:0;align-self:stretch}
+.d3 .grd{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.d3 .num{font-size:13px;font-weight:600}.d3 .lbl{font-size:10px;color:var(--dim)}
+.d3 .meal{display:flex;gap:8px;padding:8px 10px;border-radius:8px;background:var(--surf2);margin-bottom:4px}
+.d3 .meal .mn{font-size:13px;font-weight:500;flex:1}
+.d3 .meal .mm{display:flex;gap:6px;font-size:11px;color:var(--dim)}
+.d3 .meal .mm span{display:flex;align-items:center;gap:2px}
+.d3 .add-w{display:flex;gap:6px;margin-top:8px}
+.d3 .add-w input{flex:1;background:var(--surf3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none}
+.d3 .add-w input:focus{border-color:var(--accent)}
+.d3 .add-w button{background:var(--accent);color:#0a0e17;border:none;border-radius:6px;padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:.2s}
+.d3 .add-w button:hover{background:var(--accent2)}
+@media(max-width:1000px){.d3{grid-template-columns:1fr}}
 @media(max-width:900px){.header{padding:16px}.h-top{flex-direction:column;gap:8px}.cont{padding:16px}.dash{grid-template-columns:1fr}.tab-bar{padding:0 16px;overflow-x:auto}.kan{grid-template-columns:repeat(2,1fr)}.smart-w{flex-direction:column}}
 @media(max-width:600px){.kan{grid-template-columns:1fr}.greet{font-size:20px}.tab{font-size:12px;padding:10px 12px}}
 </style>
@@ -1023,18 +1359,81 @@ body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--tex
 
 <div class="cont">
 
-<div id="p-dash" class="panel active">
-  <div class="dash">
-    <div class="card"><div class="phdr"><span class="pt">Hochprior</span><span class="pc" id="cH">0</span></div><div id="tH"><div class="em2">Keine</div></div></div>
-    <div class="card"><div class="phdr"><span class="pt">Mittlere</span><span class="pc" id="cM">0</span></div><div id="tM"><div class="em2">Keine</div></div></div>
-    <div class="card"><div class="phdr"><span class="pt">Niedrige</span><span class="pc" id="cL">0</span></div><div id="tL"><div class="em2">Keine</div></div></div>
-    <div class="card"><div class="phdr"><span class="pt">Kalender</span></div><div class="cal-m" id="calM"></div></div>
-    <div class="card"><div class="phdr"><span class="pt">Habits</span><span class="pc" id="cHb">0</span></div><div id="hList"></div><div class="ha"><input id="nHi" placeholder="Neues Habit ..." onkeydown="if(event.key==='Enter')aHb()"><button onclick="aHb()">+</button></div></div>
-    <div class="card"><div class="phdr"><span class="pt">Wochenziele</span></div><div id="gList"><div class="em2">Keine</div></div></div>
-    <div class="card"><div class="phdr"><span class="pt">Einnahmen</span></div><div class="rt" id="revT">0,00</div><div class="rl">Diesen Monat</div><div id="revS"></div><div class="ha"><input id="revSi" placeholder="Quelle ..." style="width:35%"><input id="revAi" type="number" step="0.01" min="0" placeholder="Betrag ..." style="width:30%"><button onclick="aRev()">+</button></div></div>
-    <div class="card"><div class="phdr"><span class="pt">Wichtige Mails</span><span class="pc" id="cEm">0</span></div><div id="eList"><div class="em2">Keine</div></div></div>
-  </div>
-</div>
+|<div id="p-dash" class="panel active">
+|  <div class="d3">
+|    <!-- ─── COLUMN 1: Operator + Finance + Key To‑Do's ─── -->
+|    <div class="c">
+|      <div class="hc">
+|        <div class="av">P</div>
+|        <div>
+|          <div class="hn">Paulo <span class="on"></span></div>
+|          <div class="hs">Projektmanager · LiveOS</div>
+|        </div>
+|        <div class="stk">
+|          <div><div class="sn" id="strCnt">0</div><div class="sl">Streak</div></div>
+|          <div><div class="sn" id="strMax">0</div><div class="sl">Best</div></div>
+|        </div>
+|      </div>
+|      <div class="ch"><span>💰 Finanzen</span><button class="fh" onclick="tF()" id="fBtn">Verstecken</button></div>
+|      <div class="cb" id="finB">
+|        <div class="fin"><span><div class="fl">Diesen Monat</div><div class="fn" id="revT">0,00 €</div></span><span><div class="fl">Ø pro Tag</div><div class="fn" id="revAvg">0,00 €</div></span></div>
+|        <div id="revS"></div>
+|        <div class="add-w"><input id="revSi" placeholder="Quelle ..."><input id="revAi" type="number" step="0.01" min="0" placeholder="Betrag" style="width:80px"><button onclick="aRev()">+</button></div>
+|      </div>
+|      <div class="ch"><span>⭐ Key To‑Do's</span><span class="pc" id="kTc">0</span></div>
+|      <div class="cb"><div id="kTL"></div></div>
+|    </div>
+|
+|    <!-- ─── COLUMN 2: Greeting + Habits + Calendar ─── -->
+|    <div class="c">
+|      <div class="ch"><span id="grD">🗓️ Heute</span><span id="grDT" style="font-weight:400;text-transform:none;color:var(--text);font-size:13px"></span></div>
+|      <div class="cb">
+|        <div style="font-size:22px;font-weight:700;color:var(--accent);margin-bottom:2px" id="grTxt">Guten Morgen, Paulo</div>
+|        <div style="font-size:12px;color:var(--dim);margin-bottom:14px" id="grSub">Was steht heute an?</div>
+|      </div>
+|      <div class="ch"><span>✅ Habits</span><span class="pc" id="cHb">0</span></div>
+|      <div class="cb">
+|        <div id="hList"><div class="em2">Keine Habits</div></div>
+|        <div class="add-w"><input id="nHi" placeholder="Neues Habit ..." onkeydown="if(event.key==='Enter')aHb()"><button onclick="aHb()">+</button></div>
+|      </div>
+|      <div class="ch"><span>📅 Kalender</span><span class="pc" id="calEv">0</span></div>
+|      <div class="cb">
+|        <div class="calh">
+|          <button class="ct act" id="calP" onclick="swC('personal')">👤 Persönlich</button>
+|          <button class="ct" id="calF" onclick="swC('family')">👨‍👩‍👧‍👦 Familie</button>
+|          <button class="ct" onclick="gAuth()" id="gAuthBtn" style="margin-left:auto">🔗 Google</button>
+|        </div>
+|        <div class="cal-m" id="calM"></div>
+|      </div>
+|    </div>
+|
+|    <!-- ─── COLUMN 3: Goals + Nutrition ─── -->
+|    <div class="c">
+|      <div class="ch"><span>🎯 Ziele</span><span class="pc" id="gC">0</span></div>
+|      <div class="cb">
+|        <div id="gList"><div class="em2">Keine Ziele</div></div>
+|        <div class="add-w"><input id="nGi" placeholder="Neues Ziel ..." onkeydown="if(event.key==='Enter')aGo()"><button onclick="aGo()">+</button></div>
+|      </div>
+|      <div class="ch"><span>🥗 Ernährung</span><span class="pc" id="mC">0</span></div>
+|      <div class="cb">
+|        <div class="grd">
+|          <div><div class="num" id="mProt">0</div><div class="lbl">Protein</div></div>
+|          <div><div class="num" id="mFat">0</div><div class="lbl">Fett</div></div>
+|          <div><div class="num" id="mCarb">0</div><div class="lbl">Kohlenhydrate</div></div>
+|          <div><div class="num" id="mCal">0</div><div class="lbl">kcal</div></div>
+|        </div>
+|        <div id="mList"><div class="em2">Heute keine Mahlzeiten</div></div>
+|        <div class="add-w">
+|          <input id="nMi" placeholder="Mahlzeit ..." style="flex:2">
+|          <input id="nMp" type="number" placeholder="P" style="width:48px" step="0.1">
+|          <input id="nMf" type="number" placeholder="F" style="width:48px" step="0.1">
+|          <input id="nMc" type="number" placeholder="K" style="width:48px" step="0.1">
+|          <button onclick="aMeal()">+</button>
+|        </div>
+|      </div>
+|    </div>
+|  </div>
+|</div>
 
 <div id="p-kan" class="panel">
   <div class="tb">
@@ -1125,7 +1524,7 @@ const Cl={'hoch':'#ff3355','mittel':'#f59e0b','niedrig':'#6b7280'};
 // Load all data
 async function lT(){
   try{
-    const [td,hd,gd]=await Promise.all([ap('/api/tasks'),ap('/api/habits'),ap('/api/weekly-goals')]);
+    const [td,hd,gd,md,rd]=await Promise.all([ap('/api/tasks'),ap('/api/habits'),ap('/api/weekly-goals'),ap('/api/meals'),ap('/api/revenue')]);
     T=td.tasks||[];H=hd.habits||[];G=gd.goals||[];
     document.getElementById('stT').textContent=T.length;
     document.getElementById('stD').textContent=T.filter(t=>t.status==='completed').length;
@@ -1138,49 +1537,57 @@ async function lT(){
   }catch(e){console.error(e)}
 }
 
-// Dashboard
+// Dashboard v2
 function rDa(){
-  rTo();rCM();rHb();rGo();rRe();rEm();
+  rStr();rKT();rHb();rGo();rCM();rRev();rMeals();grT();
 }
-function rTo(){
-  const a=T.filter(t=>t.status!=='completed');
-  ['hoch','mittel','niedrig'].forEach(prio=>{
-    const items=a.filter(t=>pL(t.priority)===prio).slice(0,5);
-    const cid={hoch:'tH',mittel:'tM',niedrig:'tL'}[prio];
-    const cc={hoch:'cH',mittel:'cM',niedrig:'cL'}[prio];
-    const el=document.getElementById(cid);const ce=document.getElementById(cc);
-    if(ce)ce.textContent=items.length;
-    if(!items.length){el.innerHTML='<div class="em2">Keine</div>';return}
-    el.innerHTML=items.map(t=>{
-      const pj=gP(t);const ps=pj.length?' | '+pj.join(', '):'';
-      return '<div class="ti" onclick="eT('+"'"+t.id+"'"+')">'
-        +'<div class="chk" onclick="event.stopPropagation();qC('+"'"+t.id+"'"+')">&#x2713;</div>'
-        +'<div style="flex:1"><div class="tt">'+esc(t.title)+'</div>'
-        +'<div class="tm">'+ps+(t.estimated_minutes?' | '+fM(t.estimated_minutes):'')+'</div></div></div>';
-    }).join('');
-  });
+function rStr(){
+  document.getElementById('strCnt').textContent=T.filter(t=>{
+    return t.status==='completed'&&t.completed_at>Date.now()/1000-86400*7
+  }).length;
+  document.getElementById('strMax').textContent=T.filter(t=>t.status==='completed').length;
 }
-async function qC(id){await ap('/api/tasks/'+id+'/status',{method:'POST',body:JSON.stringify({status:'completed'})});await lT()}
-
-// Mini Calendar
+function rKT(){
+  const keys=T.filter(t=>t.status!=='completed');
+  const el=document.getElementById('kTL');
+  if(!keys.length){el.innerHTML='<div class="em2">Keine Key To‑Do\'s</div>';document.getElementById('kTc').textContent='0';return}
+  document.getElementById('kTc').textContent=keys.length;
+  el.innerHTML=keys.slice(0,8).map(t=>{
+    const p=pL(t.priority);
+    return '<div class="ti" onclick="eT('+"'"+t.id+"'"+')" style="border-left:3px solid '+(Cl[p]||'#999')+'">'
+      +'<div class="tt">'+esc(t.title)+'</div>'
+      +'<div class="tm">'+(t.estimated_minutes?fM(t.estimated_minutes):'')+'</div></div>';
+  }).join('');
+}
+function grT(){
+  const n=new Date(),h=n.getHours();
+  const gr='Guten '+(h<5?'Abend,':h<12?'Morgen,':h<18?'Tag,':'Abend,')+' Paulo';
+  document.getElementById('grTxt').textContent=gr;
+  const wd=['Sonntag','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag'][n.getDay()];
+  const d=n.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  document.getElementById('grD').textContent='🗓️ '+wd+', '+d;
+  document.getElementById('grDT').textContent=new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+  const todo=T.filter(t=>t.status!=='completed').length;
+  document.getElementById('grSub').textContent=todo+' offene Aufgaben · '+(todo?'Mach weiter so!':'Entspann dich heute.');
+}
+// Dashboard Calendar
 function rCM(){
-  const n=new Date(), y=n.getFullYear(), m=n.getMonth(), f=new Date(y,m,1), l=new Date(y,m+1,0);
-  const sd=(f.getDay()+6)%7, di=l.getDate();
-  const ms=Math.floor(f.getTime()/1000), me=ms+di*86400;
+  const n=new Date(),y=n.getFullYear(),m=n.getMonth(),f=new Date(y,m,1),l=new Date(y,m+1,0);
+  const sd=(f.getDay()+6)%7,di=l.getDate();
+  const ms=Math.floor(f.getTime()/1000),me=ms+di*86400;
   const td_=new Set();T.forEach(t=>{const s=t.started_at||t.created_at;if(s&&s>=ms&&s<me){const d=new Date(s*1000);td_.add(d.getDate())}});
   const mn=f.toLocaleDateString('de-DE',{month:'long',year:'numeric'});
   const wd=['Mo','Di','Mi','Do','Fr','Sa','So'];
   const tdN=n.getDate();
-  let h='<div class="ch"><button class="cn" onclick="cMN(-1)">&lt;</button><span>'+mn+'</span><button class="cn" onclick="cMN(1)">&gt;</button></div><div class="cd">';
+  let h='<div class="cal-m"><div class="ch"><button class="cn" onclick="cMN(-1)">&lt;</button><span>'+mn+'</span><button class="cn" onclick="cMN(1)">&gt;</button></div><div class="cd">';
   wd.forEach(d=>{h+='<div class="cw">'+d+'</div>'});
   for(let i=0;i<sd;i++)h+='<div></div>';
   for(let d=1;d<=di;d++){const cls=d===tdN?'td':td_.has(d)?'ht':'';h+='<div class="'+cls+'">'+d+'</div>'}
-  h+='</div>';
+  h+='</div></div>';
   document.getElementById('calM').innerHTML=h;
 }
 let cMM=0;
 function cMN(d){cMM+=d;rCM()}
-
 // Habits
 function rHb(){
   const el=document.getElementById('hList');const ce=document.getElementById('cHb');
@@ -1190,30 +1597,78 @@ function rHb(){
 }
 async function tHb(id){await ap('/api/habits/'+id+'/toggle',{method:'POST'});const hd=await ap('/api/habits');H=hd.habits||[];rHb()}
 async function aHb(){const i=document.getElementById('nHi');const n=i.value.trim();if(!n)return;await ap('/api/habits',{method:'POST',body:JSON.stringify({name:n,icon:'&#x2705;'})});i.value='';const hd=await ap('/api/habits');H=hd.habits||[];rHb()}
-
-// Goals
+// Weekly Goals
 function rGo(){
-  const el=document.getElementById('gList');
-  if(!G.length){el.innerHTML='<div class="em2">Keine</div>';return}
+  const el=document.getElementById('gList');document.getElementById('gC').textContent=G.length;
+  if(!G.length){el.innerHTML='<div class="em2">Keine Ziele</div>';return}
   el.innerHTML=G.map(g=>{
     const pct=g.target_value>0?Math.min(100,Math.round(g.current_value/g.target_value*100)):0;
-    return '<div class="go"><span class="gi">'+(g.icon||'&#x1f3af;')+'</span><div class="gif"><div class="gt">'+esc(g.title)+'</div><div class="gb"><div class="gf" style="width:'+pct+'%"></div></div><div class="gl">'+g.current_value+'/'+g.target_value+' '+g.unit+' ('+pct+'%)</div></div></div>';
+    return '<div class="go" onclick="cGo('+g.id+')"><span class="gi">'+(g.icon||'&#x1f3af;')+'</span><div class="gif"><div class="gt">'+esc(g.title)+'</div><div class="gb"><div class="gf" style="width:'+pct+'%"></div></div><div class="gl">'+g.current_value+'/'+g.target_value+' '+g.unit+' ('+pct+'%)</div></div></div>';
   }).join('');
 }
-
+async function cGo(id){await ap('/api/weekly-goals/complete',{method:'POST',body:JSON.stringify({id:id})});const gd=await ap('/api/weekly-goals');G=gd.goals||[];rGo()}
+async function aGo(){const i=document.getElementById('nGi');const n=i.value.trim();if(!n)return;await ap('/api/weekly-goals',{method:'POST',body:JSON.stringify({title:n,icon:'&#x1f3af;',target_value:7,current_value:0,unit:'x'})});i.value='';const gd=await ap('/api/weekly-goals');G=gd.goals||[];rGo()}
 // Revenue
-async function rRe(){
-  try{const rd=await ap('/api/revenue');document.getElementById('revT').innerHTML=Number(rd.total).toLocaleString('de-DE',{minimumFractionDigits:2})+' &euro;';
+async function rRev(){
+  try{const rd=await ap('/api/revenue');const tot=Number(rd.total)||0;
+  document.getElementById('revT').innerHTML=tot.toLocaleString('de-DE',{minimumFractionDigits:2})+' €';
+  document.getElementById('revAvg').innerHTML=(tot/(new Date().getDate())).toLocaleString('de-DE',{minimumFractionDigits:2})+' €';
   const ss=rd.by_source||[];const co=document.getElementById('revS');
-  if(!ss.length){co.innerHTML='<div class="em2">Keine</div>';return}
-  co.innerHTML=ss.map(s=>'<div class="rs"><span class="rn">'+esc(s.source)+'</span><span class="ra">'+Number(s.total).toFixed(2).replace('.',',')+' &euro;</span></div>').join('')
+  if(!ss.length){co.innerHTML='<div class="em2">Keine Einnahmen</div>';return}
+  co.innerHTML=ss.map(s=>'<div class="rs"><span class="rn">'+esc(s.source)+'</span><span class="ra">'+Number(s.total).toFixed(2).replace('.',',')+' €</span></div>').join('')
   }catch(e){}}
-async function rEm(){
-  try{const ed=await ap('/api/important-emails');const em=ed.emails||[];document.getElementById('cEm').textContent=em.length;
-  const co=document.getElementById('eList');if(!em.length){co.innerHTML='<div class="em2">Keine</div>';return}
-  co.innerHTML=em.map(e=>'<div class="em" onclick="mER('+e.id+')"><div class="epr" style="background:'+(e.priority==='hoch'?'var(--danger)':e.priority==='mittel'?'var(--warn)':'var(--pl)')+'"></div><div style="flex:1;opacity:'+(e.is_read?'.6':'1')+'"><div class="es">'+esc(e.sender)+'</div><div class="ej">'+esc(e.subject)+'</div><div class="ep">'+esc(e.preview)+'</div></div></div>').join('')
+async function aRev(){
+  const s=document.getElementById('revSi').value.trim();
+  const a=parseFloat(document.getElementById('revAi').value);
+  if(!s||!a)return;
+  await ap('/api/revenue',{method:'POST',body:JSON.stringify({source:s,amount:a})});
+  document.getElementById('revSi').value='';document.getElementById('revAi').value='';
+  rRev();
+}
+function tF(){
+  const b=document.getElementById('finB');const btn=document.getElementById('fBtn');
+  if(b.style.display==='none'){b.style.display='';btn.textContent='Verstecken'}
+  else{b.style.display='none';btn.textContent='Zeigen'}
+}
+// Meals
+async function rMeals(){
+  try{const md=await ap('/api/meals');const meals=md.meals||[];
+  document.getElementById('mC').textContent=meals.length;
+  let p=0,f=0,c=0,cal=0;
+  meals.forEach(m=>{p+=m.protein||0;f+=m.fat||0;c+=m.carbs||0;cal+=m.calories||0});
+  document.getElementById('mProt').textContent=p.toFixed(1);
+  document.getElementById('mFat').textContent=f.toFixed(1);
+  document.getElementById('mCarb').textContent=c.toFixed(1);
+  document.getElementById('mCal').textContent=Math.round(cal);
+  const el=document.getElementById('mList');
+  if(!meals.length){el.innerHTML='<div class="em2">Heute keine Mahlzeiten</div>';return}
+  el.innerHTML=meals.map(m=>'<div class="meal"><div class="mn">'+esc(m.name)+'</div><div class="mm"><span>💪'+m.protein+'</span><span>🧈'+m.fat+'</span><span>🌾'+m.carbs+'</span><span>🔥'+Math.round(m.calories)+'</span></div></div>').join('');
   }catch(e){}}
-async function mER(id){await ap('/api/important-emails/'+id,{method:'DELETE'});rEm()}
+async function aMeal(){
+  const n=document.getElementById('nMi').value.trim();
+  const p=parseFloat(document.getElementById('nMp').value)||0;
+  const f=parseFloat(document.getElementById('nMf').value)||0;
+  const c=parseFloat(document.getElementById('nMc').value)||0;
+  if(!n)return;
+  const cal=p*4+f*9+c*4;
+  await ap('/api/meals',{method:'POST',body:JSON.stringify({name:n,protein:p,fat:f,carbs:c,calories:Math.round(cal)})});
+  document.getElementById('nMi').value='';document.getElementById('nMp').value='';
+  document.getElementById('nMf').value='';document.getElementById('nMc').value='';
+  rMeals();
+}
+// Google Calendar
+function swC(m){
+  document.getElementById('calP').className=m==='personal'?'ct act':'ct';
+  document.getElementById('calF').className=m==='family'?'ct act':'ct';
+}
+async function gAuth(){
+  const btn=document.getElementById('gAuthBtn');
+  btn.textContent='Verbinde ...';
+  try{const r=await fetch('/api/auth/google/url');const d=await r.json();
+  if(d.url)window.open(d.url,'_blank');
+  btn.textContent='🔗 Google Verbinden';
+  }catch(e){btn.textContent='❌ Fehler';setTimeout(()=>btn.textContent='🔗 Google',2000)}
+}
 
 // Smart Input
 async function hSI(){

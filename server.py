@@ -1405,6 +1405,109 @@ async function aRev(){
 </body>
 </html>"""
 
+# ═══════════════════════════════════════════
+# 📁 3 Projekt-Chats (kein Auth nötig)
+# ═══════════════════════════════════════════
+
+CHAT_DIR = BASE / "data" / "chats"
+CHAT_DIR.mkdir(parents=True, exist_ok=True)
+CHAT_ROOMS = {"liveos": "🚀 LiveOS Dashboard", "vintage": "🏺 Vintage Verkauf", "projektmanagement": "📋 Projektmanagement"}
+CHAT_COLORS = {"liveos": "#00bcd4", "vintage": "#ff9800", "projektmanagement": "#4caf50"}
+
+def chat_load(room):
+    p = CHAT_DIR / f"{room}.json"
+    if p.exists():
+        with open(p) as f:
+            return json.load(f)
+    return []
+
+def chat_save(room, msgs):
+    p = CHAT_DIR / f"{room}.json"
+    with open(p, "w") as f:
+        json.dump(msgs, f, indent=2, ensure_ascii=False)
+
+CHAT_CSS = """
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;height:100vh;display:flex;flex-direction:column}
+.header{background:#161b22;padding:16px 24px;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:16px;flex-shrink:0}
+.header h1{font-size:20px;font-weight:600}
+.header .nav{display:flex;gap:8px;margin-left:auto}
+.nav a{padding:6px 14px;border-radius:6px;text-decoration:none;color:#c9d1d9;font-size:14px;transition:.2s}
+.nav a:hover{background:#30363d}
+.nav a.active{background:#1f6feb;color:#fff}
+.msgs{flex:1;overflow-y:auto;padding:16px 24px}
+.msg{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px;margin-bottom:8px;max-width:80%}
+.msg.you{background:#1a3a4a;border-color:#1f6feb;margin-left:auto}
+.msg .meta{font-size:12px;color:#8b949e;margin-bottom:4px}
+.msg .text{font-size:15px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.ia{background:#161b22;border-top:1px solid #30363d;padding:16px 24px;display:flex;gap:12px;flex-shrink:0}
+.ia input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px 16px;color:#c9d1d9;font-size:15px;outline:none}
+.ia input:focus{border-color:#1f6feb}
+.ia button{background:#1f6feb;color:#fff;border:none;border-radius:8px;padding:12px 24px;font-size:15px;cursor:pointer;font-weight:600}
+.ia button:hover{background:#388bfd}
+.empty{display:flex;align-items:center;justify-content:center;height:100%;color:#8b949e;font-size:18px}
+.st{text-align:center;font-size:12px;color:#8b949e;padding:8px;border-bottom:1px solid #30363d;flex-shrink:0}
+"""
+
+def chat_page(room):
+    msgs = chat_load(room)
+    mh = '<div class="empty">Noch keine Nachrichten</div>' if not msgs else "".join(
+        f'<div class="msg {"you" if m.get("r")=="u" else ""}"><div class="meta">{m.get("r","")} · {m.get("t","")}</div><div class="text">{h(m.get("x",""))}</div></div>'
+        for m in msgs
+    )
+    nav = "".join(f'<a href="/chat/{r}" {"class=active" if r==room else ""} style="border-left:3px solid {CHAT_COLORS[r]}">{CHAT_ROOMS[r]}</a>' for r in CHAT_ROOMS)
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{CHAT_ROOMS[room]}</title><style>{CHAT_CSS}</style></head><body>
+<div class="header"><h1 style="color:{CHAT_COLORS[room]}">{CHAT_ROOMS[room]}</h1><div class="nav">{nav}</div></div>
+<div class="st">💾 Automatisch gespeichert · Kein Verlust</div>
+<div class="msgs" id="m">{mh}</div>
+<div class="ia"><form action="/chat/send/{room}" method=POST style="display:flex;gap:12px;width:100%"><input name=x placeholder="Nachricht..." autofocus required><button>Senden</button></form></div>
+<script>document.querySelector('form').onsubmit=async function(e){{e.preventDefault();var i=this.querySelector('input'),t=i.value;if(!t)return;await fetch(this.action,{{method:'POST',body:'x='+encodeURIComponent(t)}});i.value='';location.reload();}};setTimeout(function(){{var m=document.getElementById('m');if(m)m.scrollTop=m.scrollHeight;}},100);</script>
+</body></html>"""
+
+def h(t): return t.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
+
+# Add chat routes to handler
+_chat_orig_do_GET = KanbanHandler.do_GET
+def _chat_do_GET(self):
+    p = self.path.rstrip("/")
+    if p.startswith("/chat/"):
+        room = p.split("/chat/")[-1].split("/")[0]
+        if room in CHAT_ROOMS:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(chat_page(room).encode("utf-8"))
+            return
+    _chat_orig_do_GET(self)
+KanbanHandler.do_GET = _chat_do_GET
+
+_chat_orig_do_POST = KanbanHandler.do_POST
+def _chat_do_POST(self):
+    p = self.path.rstrip("/")
+    if p.startswith("/chat/send/"):
+        room = p.split("/chat/send/")[-1]
+        if room not in CHAT_ROOMS:
+            self.send_error(404); return
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8")
+        from urllib.parse import parse_qs
+        text = parse_qs(body).get("x", [""])[0].strip()
+        if text:
+            msgs = chat_load(room)
+            msgs.append({"r": "u", "x": text, "t": datetime.now().strftime("%H:%M"), "room": room})
+            chat_save(room, msgs)
+        self.send_response(302)
+        self.send_header("Location", f"/chat/{room}")
+        self.end_headers()
+        return
+    _chat_orig_do_POST(self)
+KanbanHandler.do_POST = _chat_do_POST
+
+print(f"   Chat-Räume:                                http://{HOST}:{PORT}/chat/")
+print(f"   🚀 LiveOS:                                 http://{HOST}:{PORT}/chat/liveos")
+print(f"   🏺 Vintage:                                http://{HOST}:{PORT}/chat/vintage")
+print(f"   📋 Projekte:                               http://{HOST}:{PORT}/chat/projektmanagement")
+
 if __name__ == "__main__":
     server = HTTPServer((HOST, PORT), KanbanHandler)
     print(f"✅ Kanban + Gantt + Brainstorming + Pomodoro: http://{HOST}:{PORT}")

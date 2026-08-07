@@ -28,3 +28,4 @@ Projektmanagement/
 
 - Täglicher Check-in: `0 8 * * *` – Projekt-Status, Erinnerungen
 - Weekly Review: `0 16 * * 1` – Wochenrückblick und Planung
+

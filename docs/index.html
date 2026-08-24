@@ -1,0 +1,1540 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Projekte">
+<title>Projekte · Paul Dubrownik</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f6f8;color:#1a1a2e;padding:20px}
+h1{font-size:22px;color:#002D69;margin-bottom:4px}
+h1 span{color:#007FA7;font-weight:400}
+.sub{font-size:13px;color:#888;margin-bottom:4px}
+.syncbar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.syncbar span{font-size:12px;color:#888}
+.tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:2px solid #e5e7eb}
+.tab{padding:10px 20px;cursor:pointer;font-size:14px;font-weight:600;background:transparent;color:#888;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;transition:.2s}
+.tab:hover{color:#002D69}
+.tab.active{color:#002D69;border-bottom-color:#002D69}
+.panel{display:none}
+.panel.active{display:block}
+.toolbar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+.btn{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:.2s;display:inline-flex;align-items:center;gap:4px;font-family:inherit}
+.btn-primary{background:#002D69;color:#fff}
+.btn-primary:hover{background:#003d8f}
+.btn-sm{padding:4px 10px;font-size:12px}
+.btn-danger{background:#DC2626;color:#fff}
+.btn-danger:hover{background:#B91C1C}
+.btn-ghost{background:transparent;color:#666}
+.btn-ghost:hover{background:#e5e7eb;color:#333}
+.btn-success{background:#059669;color:#fff}
+.btn-success:hover{background:#047857}
+.btn-pomo{background:#7C3AED;color:#fff}
+.btn-pomo:hover{background:#6D28D9}
+
+/* Kanban */
+.kanban{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;min-height:60vh}
+.column{background:#e5e7eb;border-radius:10px;padding:10px;min-height:200px;display:flex;flex-direction:column}
+.col-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #ddd;font-size:12px;color:#666}
+.col-header h3{font-size:13px;font-weight:600}
+.col-count{background:#002D69;color:#fff;font-size:10px;border-radius:10px;padding:1px 7px;font-weight:600}
+.col-body{flex:1;min-height:100px}
+.card{background:#fff;border-radius:8px;padding:12px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.08);cursor:pointer;transition:.2s;border-left:4px solid #999;position:relative}
+.card:hover{box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.card.prio-hoch{border-left-color:#DD3221}
+.card.prio-mittel{border-left-color:#f59e0b}
+.card.prio-niedrig{border-left-color:#6b7280}
+.card-title{font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:2px;padding-right:50px}
+.card-body{font-size:11px;color:#666;line-height:1.3;margin-top:4px}
+.card-meta{font-size:10px;color:#999;margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
+.card-dates{font-size:9px;color:#aaa;margin-top:4px;display:flex;gap:6px}
+.card-est{font-size:9px;color:#7C3AED;margin-top:2px;font-weight:500}
+.card-actions{position:absolute;top:6px;right:6px;display:flex;gap:2px}
+.card-actions button{background:none;border:none;cursor:pointer;font-size:14px;color:#999;padding:2px 4px;border-radius:4px;transition:.2s}
+.card-actions button:hover{background:#f0f0f0;color:#333}
+.status-select{font-size:10px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;color:#555}
+
+/* Modal */
+.modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center;padding:20px}
+.modal-overlay.show{display:flex}
+.modal{background:#fff;border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,.2);animation:fadeIn .2s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.modal-close{float:right;font-size:22px;cursor:pointer;color:#999;line-height:1}
+.modal-close:hover{color:#333}
+.modal h2{color:#002D69;font-size:18px;margin-bottom:16px;padding-right:30px}
+.modal label{display:block;font-size:12px;font-weight:600;color:#666;margin-bottom:4px;margin-top:12px}
+.modal input[type=text],.modal input[type=password],.modal input[type=date],.modal input[type=number],.modal textarea,.modal select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit}
+.modal textarea{min-height:80px;resize:vertical}
+.modal .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.modal .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.modal .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end;flex-wrap:wrap}
+.modal .hint{font-size:12px;color:#666;margin-bottom:12px;line-height:1.5}
+
+/* Gantt */
+.gantt{overflow-x:auto;background:#fff;border-radius:10px;padding:16px}
+.gantt-table{width:100%;border-collapse:collapse;font-size:13px;min-width:750px}
+.gantt-table th{background:#002D69;color:#fff;padding:8px 12px;text-align:left;font-size:12px;position:sticky;top:0}
+.gantt-table td{padding:8px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
+.gantt-date{font-size:10px;color:#999;white-space:nowrap}
+.gantt-timeline{position:relative;margin-top:16px;padding-top:12px;border-top:1px solid #e5e7eb}
+.gantt-timeline .tl-label{font-size:11px;font-weight:600;color:#666;margin-bottom:6px}
+.timeline-row{display:flex;align-items:center;margin-bottom:4px;position:relative}
+.timeline-label{width:140px;font-size:12px;font-weight:500;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:8px;flex-shrink:0}
+.timeline-track{flex:1;height:24px;background:#f0f0f0;border-radius:4px;position:relative;overflow:hidden}
+.timeline-fill{position:absolute;top:0;left:0;height:100%;border-radius:4px;min-width:4px;transition:width .5s}
+.timeline-text{position:absolute;top:0;left:4px;height:100%;display:flex;align-items:center;font-size:10px;color:#fff;font-weight:600;white-space:nowrap}
+
+/* Pomodoro */
+.pomo-fab{position:fixed;bottom:24px;right:24px;width:56px;height:56px;border-radius:50%;background:#7C3AED;color:#fff;border:none;cursor:pointer;font-size:24px;box-shadow:0 4px 16px rgba(124,58,237,.4);z-index:900;transition:.2s}
+.pomo-fab:hover{transform:scale(1.1);background:#6D28D9}
+.pomo-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.85);z-index:9998;justify-content:center;align-items:center;flex-direction:column}
+.pomo-overlay.show{display:flex}
+.pomo-card{background:#fff;border-radius:20px;padding:40px;text-align:center;max-width:360px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.pomo-card .phase{font-size:14px;font-weight:600;color:#7C3AED;margin-bottom:8px}
+.pomo-card .timer{font-size:72px;font-weight:700;color:#1a1a2e;font-variant-numeric:tabular-nums;margin:16px 0}
+.pomo-card .timer.pause{color:#f59e0b}
+.pomo-card .timer.break{color:#059669}
+.pomo-card .pomo-btn-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.pomo-card .pomo-btn-row button{min-width:80px}
+.pomo-card .task-label{font-size:12px;color:#888;margin-top:12px;padding:8px;background:#f4f6f8;border-radius:8px}
+.pomo-card .close-pomo{position:absolute;top:12px;right:12px;font-size:24px;cursor:pointer;color:#999;background:none;border:none}
+.pomo-card-wrap{position:relative}
+.pomo-count{font-size:11px;color:#aaa;margin-top:8px}
+
+/* Misc */
+.empty-state{padding:40px 20px;text-align:center;color:#aaa;font-size:14px}
+.loading{text-align:center;padding:40px;color:#888;font-size:14px}
+.spinner{display:inline-block;width:20px;height:20px;border:3px solid #e5e7eb;border-top-color:#002D69;border-radius:50%;animation:spin .6s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+@media(max-width:1000px){.kanban{grid-template-columns:repeat(3,1fr)}.brainstorm-panel{grid-template-columns:1fr}}
+@media(max-width:700px){.kanban{grid-template-columns:repeat(2,1fr)}.timeline-label{width:100px;font-size:11px}}
+@media(max-width:500px){.kanban{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<h1>Projekte <span>· Paul Dubrownik</span></h1>
+<div class="sub" id="statusLine">Lade Daten …</div>
+<div class="syncbar">
+  <span id="syncStatus"></span>
+  <button class="btn btn-ghost btn-sm" onclick="openSettings()">⚙️ Sync</button>
+</div>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('overview')">📊 Übersicht</button>
+  <button class="tab" onclick="switchTab('kanban')">📋 Kanban</button>
+  <button class="tab" onclick="switchTab('calendar')">📅 Kalender</button>
+  <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
+</div>
+
+<div id="panel-kanban" class="panel">
+  <div class="toolbar">
+    <button class="btn btn-primary" onclick="openCreateModal()">+ Neue Karte</button>
+    <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="">📁 Alle Projekte</option>
+    </select>
+    <button class="btn btn-ghost" onclick="syncAndReload()">🔄 Aktualisieren</button>
+  </div>
+  <div id="kanban" class="kanban"><div class="loading"><span class="spinner"></span>Lade …</div></div>
+</div>
+
+<div id="panel-gantt" class="panel">
+  <div class="toolbar">
+    <select id="ganttProjectFilter" onchange="renderGantt()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="">📁 Alle Projekte</option>
+    </select>
+    <button class="btn btn-ghost" onclick="syncAndReload()">🔄 Aktualisieren</button>
+  </div>
+  <div id="ganttWrap" class="gantt"><div class="loading"><span class="spinner"></span>Lade …</div></div>
+</div>
+
+<div id="panel-overview" class="panel active">
+  <div class="toolbar">
+    <button class="btn btn-ghost" onclick="syncAndReload()">🔄 Aktualisieren</button>
+  </div>
+  <div id="overviewWrap"><div class="loading"><span class="spinner"></span>Lade …</div></div>
+  <div id="routinesOverview"></div>
+</div>
+
+<div id="panel-calendar" class="panel">
+  <div class="toolbar">
+    <button class="btn btn-ghost" onclick="calNav(-1)">◀</button>
+    <span id="calLabel" style="font-size:14px;font-weight:600;color:#002D69;min-width:240px;text-align:center"></span>
+    <button class="btn btn-ghost" onclick="calNav(1)">▶</button>
+    <button class="btn btn-ghost" onclick="calToday()">Heute</button>
+    <select id="calProjectFilter" onchange="renderCalendar()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="">📁 Alle Projekte</option>
+    </select>
+    <button class="btn btn-ghost" onclick="syncAndReload()">🔄</button>
+    <span style="flex:1"></span>
+    <button class="btn btn-sm cal-vw" data-vw="week" onclick="calSetView('week')" style="background:#002D69;color:#fff">Woche</button>
+    <button class="btn btn-sm cal-vw" data-vw="day" onclick="calSetView('day')">Tag</button>
+    <button class="btn btn-sm cal-vw" data-vw="month" onclick="calSetView('month')">Monat</button>
+    <button class="btn btn-sm cal-vw" data-vw="year" onclick="calSetView('year')">Jahr</button>
+  </div>
+  <div id="calendarWrap" style="background:#fff;border-radius:10px;padding:16px;overflow-x:auto">
+    <div class="loading"><span class="spinner"></span>Lade …</div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modalContent">
+    <span class="modal-close" onclick="closeModal()">&times;</span>
+    <h2 id="modalTitle">Aufgabe</h2>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<!-- Pomodoro FAB -->
+<button class="pomo-fab" id="pomoFab" onclick="togglePomo()" title="Fokus-Modus (Pomodoro)">🍅</button>
+
+<!-- Pomodoro Overlay -->
+<div class="pomo-overlay" id="pomoOverlay">
+  <div class="pomo-card-wrap">
+    <div class="pomo-card">
+      <button class="close-pomo" onclick="togglePomo()">&times;</button>
+      <div class="phase" id="pomoPhase">🍅 Fokus</div>
+      <div class="timer" id="pomoTimer">25:00</div>
+      <div class="pomo-btn-row">
+        <button class="btn btn-pomo" id="pomoBtn" onclick="pomoStart()">▶ Start</button>
+        <button class="btn btn-ghost" onclick="pomoReset()">↺ Reset</button>
+      </div>
+      <div class="task-label" id="pomoTask">Keine Aufgabe ausgewählt</div>
+      <div class="pomo-count" id="pomoCount">🍅 0 Today</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// GitHub-Gist-Speicher (ersetzt den früheren Python-API-Server).
+// Daten liegen als JSON in einem privaten Gist unter deinem
+// GitHub-Account; das Token bleibt ausschließlich im localStorage
+// dieses Browsers/Geräts.
+// ══════════════════════════════════════════════════════════════
+const GIST_FILE = 'projektmanagement-data.json';
+const LS_TOKEN = 'pm_gh_token';
+const LS_GIST = 'pm_gh_gist_id';
+const LS_CACHE = 'pm_data_cache';
+
+const Store = {
+  token: localStorage.getItem(LS_TOKEN) || '',
+  gistId: localStorage.getItem(LS_GIST) || '',
+  data: null,
+  saveTimer: null,
+  saving: false,
+  pendingResave: false,
+
+  emptyData() {
+    return { version: 1, tasks: [], routines: [], routine_logs: [], brainstorm: [] };
+  },
+
+  loadCache() {
+    try { return JSON.parse(localStorage.getItem(LS_CACHE)); } catch (e) { return null; }
+  },
+  saveCache() {
+    try { localStorage.setItem(LS_CACHE, JSON.stringify(this.data)); } catch (e) {}
+  },
+
+  async ghFetch(url, opts = {}) {
+    const res = await fetch(url, {
+      ...opts,
+      headers: {
+        'Authorization': 'token ' + this.token,
+        'Accept': 'application/vnd.github+json',
+        ...(opts.headers || {}),
+      },
+    });
+    if (!res.ok) {
+      let msg = res.status;
+      try { const j = await res.json(); if (j.message) msg += ': ' + j.message; } catch (e) {}
+      throw new Error(String(msg));
+    }
+    return res.status === 204 ? null : res.json();
+  },
+
+  async ensureGist() {
+    if (this.gistId) return this.gistId;
+    const gist = await this.ghFetch('https://api.github.com/gists', {
+      method: 'POST',
+      body: JSON.stringify({
+        description: 'Projektmanagement – Daten (Paul Dubrownik)',
+        public: false,
+        files: { [GIST_FILE]: { content: JSON.stringify(this.emptyData(), null, 2) } },
+      }),
+    });
+    this.gistId = gist.id;
+    localStorage.setItem(LS_GIST, this.gistId);
+    return this.gistId;
+  },
+
+  // Läd frisch vom Gist (falls Token gesetzt), sonst aus dem lokalen Cache.
+  async load() {
+    if (!this.token) {
+      this.data = this.data || this.loadCache() || this.emptyData();
+      return this.data;
+    }
+    await this.ensureGist();
+    const gist = await this.ghFetch('https://api.github.com/gists/' + this.gistId);
+    const file = gist.files && gist.files[GIST_FILE];
+    let raw = file ? file.content : null;
+    if (file && file.truncated) {
+      raw = await (await fetch(file.raw_url)).text();
+    }
+    this.data = raw ? JSON.parse(raw) : this.emptyData();
+    this.data.tasks = this.data.tasks || [];
+    this.data.routines = this.data.routines || [];
+    this.data.routine_logs = this.data.routine_logs || [];
+    this.data.brainstorm = this.data.brainstorm || [];
+    this.saveCache();
+    return this.data;
+  },
+
+  // Lokale Änderung: sofort cachen, Sync zum Gist debounced nachziehen.
+  scheduleSave() {
+    this.saveCache();
+    if (!this.token) return;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.flush(), 900);
+  },
+
+  async flush() {
+    if (!this.token) return;
+    if (this.saving) { this.pendingResave = true; return; }
+    this.saving = true;
+    setSyncStatus('🔄 Speichere …');
+    try {
+      await this.ensureGist();
+      await this.ghFetch('https://api.github.com/gists/' + this.gistId, {
+        method: 'PATCH',
+        body: JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify(this.data, null, 2) } } }),
+      });
+      setSyncStatus('✅ Synchronisiert · ' + new Date().toLocaleTimeString('de-DE'));
+    } catch (e) {
+      console.error('Gist-Speichern fehlgeschlagen', e);
+      setSyncStatus('⚠️ Sync fehlgeschlagen: ' + e.message);
+      clearTimeout(this.saveTimer);
+      this.saveTimer = setTimeout(() => this.flush(), 6000);
+    } finally {
+      this.saving = false;
+      if (this.pendingResave) { this.pendingResave = false; this.scheduleSave(); }
+    }
+  },
+};
+
+function setSyncStatus(text) {
+  const el = document.getElementById('syncStatus');
+  if (el) el.textContent = text;
+}
+function updateConnBadge() {
+  if (Store.token) setSyncStatus('🔗 GitHub-Sync aktiv (Gist ' + Store.gistId + ')');
+  else setSyncStatus('🔌 Nur lokal auf diesem Gerät · ⚙️ Sync einrichten');
+}
+
+// ── Kleine Helfer für den lokalen Daten-Layer ──
+const PRIO_VALUES = { hoch: 1, mittel: 2, niedrig: 3 };
+function dateToTs(s) {
+  if (!s) return null;
+  const d = new Date(s + 'T00:00:00');
+  if (isNaN(d.getTime())) return null;
+  return Math.floor(d.getTime() / 1000);
+}
+function randHex(n) {
+  const bytes = new Uint8Array(n / 2);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function computeRoutines(d) {
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff = now - 86400;
+  return [...d.routines]
+    .sort((a, b) => (a.category || '').localeCompare(b.category || '') || String(a.name).localeCompare(String(b.name)))
+    .map(r => {
+      const logs = d.routine_logs.filter(l => l.routine_id === r.id);
+      const last = logs.reduce((mx, l) => Math.max(mx, l.completed_at), 0);
+      return { ...r, done_today: logs.some(l => l.completed_at > cutoff), last_done: last || null };
+    });
+}
+
+// ── API (operiert lokal auf Store.data statt auf einem Server) ──
+async function api(path, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase();
+  const body = opts.body ? JSON.parse(opts.body) : {};
+  if (!Store.data) await Store.load();
+  const d = Store.data;
+  let m;
+
+  if (method === 'GET' && path === '/api/tasks') {
+    return { tasks: d.tasks };
+  }
+  if (method === 'GET' && path === '/api/routines') {
+    return { routines: computeRoutines(d) };
+  }
+  if (method === 'POST' && path === '/api/tasks') {
+    const id = 't_' + randHex(8);
+    const now = Math.floor(Date.now() / 1000);
+    const status = COLS.includes(body.status) ? body.status : 'ready';
+    d.tasks.push({
+      id,
+      title: (body.title || 'Neue Aufgabe').trim() || 'Neue Aufgabe',
+      body: (body.body || '').trim(),
+      status,
+      priority: PRIO_VALUES[body.priority] || 2,
+      created_at: now,
+      started_at: dateToTs(body.start_date),
+      completed_at: dateToTs(body.due_date),
+      assignee: 'user',
+      project_id: (body.project || '').trim() || null,
+      estimated_minutes: parseInt(body.estimated_minutes) || 0,
+      buffer_percent: parseInt(body.buffer_percent) || 20,
+    });
+    Store.scheduleSave();
+    return { ok: true, id };
+  }
+  if (method === 'POST' && (m = path.match(/^\/api\/tasks\/([^/]+)\/status$/))) {
+    const t = d.tasks.find(x => x.id === m[1]);
+    if (t && COLS.includes(body.status)) {
+      const now = Math.floor(Date.now() / 1000);
+      t.status = body.status;
+      if (body.status === 'running' && !t.started_at) t.started_at = now;
+      if (body.status === 'completed' && !t.completed_at) t.completed_at = now;
+      Store.scheduleSave();
+    }
+    return { ok: true };
+  }
+  if (method === 'PUT' && (m = path.match(/^\/api\/tasks\/([^/]+)$/))) {
+    const t = d.tasks.find(x => x.id === m[1]);
+    if (t) {
+      if (body.title) t.title = body.title.trim();
+      if (body.body !== undefined) t.body = (body.body || '').trim();
+      if (body.priority && PRIO_VALUES[body.priority]) t.priority = PRIO_VALUES[body.priority];
+      if (body.project !== undefined) t.project_id = (body.project || '').trim() || null;
+      if (body.start_date !== undefined) t.started_at = dateToTs(body.start_date);
+      if (body.due_date !== undefined) t.completed_at = dateToTs(body.due_date);
+      if (body.estimated_minutes !== undefined) t.estimated_minutes = parseInt(body.estimated_minutes) || 0;
+      if (body.buffer_percent !== undefined) t.buffer_percent = parseInt(body.buffer_percent) || 20;
+      Store.scheduleSave();
+    }
+    return { ok: true };
+  }
+  if (method === 'DELETE' && (m = path.match(/^\/api\/tasks\/([^/]+)$/))) {
+    d.tasks = d.tasks.filter(x => x.id !== m[1]);
+    Store.scheduleSave();
+    return { ok: true };
+  }
+  if (method === 'POST' && (m = path.match(/^\/api\/routines\/(\d+)\/toggle$/))) {
+    const rid = parseInt(m[1]);
+    const now = Math.floor(Date.now() / 1000);
+    const cutoff = now - 86400;
+    const hasToday = d.routine_logs.some(l => l.routine_id === rid && l.completed_at > cutoff);
+    if (hasToday) {
+      d.routine_logs = d.routine_logs.filter(l => !(l.routine_id === rid && l.completed_at > cutoff));
+    } else {
+      const nid = d.routine_logs.reduce((mx, l) => Math.max(mx, l.id || 0), 0) + 1;
+      d.routine_logs.push({ id: nid, routine_id: rid, completed_at: now });
+    }
+    Store.scheduleSave();
+    return { ok: true };
+  }
+  return { error: 'not found' };
+}
+
+// ── Routinen anlegen/löschen (früher nur extern befüllt) ──
+async function addRoutine() {
+  const name = prompt('Name der Routine:');
+  if (!name || !name.trim()) return;
+  const category = prompt('Kategorie (optional):', 'Allgemein') || 'Allgemein';
+  if (!Store.data) await Store.load();
+  const nid = Store.data.routines.reduce((mx, r) => Math.max(mx, r.id || 0), 0) + 1;
+  Store.data.routines.push({ id: nid, name: name.trim(), category: category.trim() || 'Allgemein', created_at: Math.floor(Date.now() / 1000) });
+  Store.scheduleSave();
+  await loadTasks();
+}
+async function deleteRoutine(id) {
+  if (!confirm('Routine löschen?')) return;
+  Store.data.routines = Store.data.routines.filter(r => r.id !== id);
+  Store.data.routine_logs = Store.data.routine_logs.filter(l => l.routine_id !== id);
+  Store.scheduleSave();
+  await loadTasks();
+}
+
+// ── Settings-Modal (GitHub-Sync einrichten) ──
+function openSettings() {
+  document.getElementById('modalTitle').textContent = '⚙️ GitHub-Sync';
+  document.getElementById('modalBody').innerHTML = `
+    <p class="hint">
+      Deine Daten liegen in einem <strong>privaten GitHub Gist</strong> unter deinem Account.
+      Erstelle auf <strong>github.com → Settings → Developer settings → Personal access tokens →
+      Tokens (classic)</strong> ein neues Token mit ausschließlich dem Scope <strong>gist</strong>.
+      Trag es hier ein — dasselbe Token auf jedem Gerät sorgt für Sync (auch am Handy).
+      Das Token bleibt nur lokal in diesem Browser gespeichert.
+    </p>
+    <label>GitHub Token</label>
+    <input type="password" id="sTok" placeholder="ghp_…" value="${escHtml(Store.token)}">
+    <label>Gist-ID (leer lassen, um beim ersten Speichern automatisch einen anzulegen)</label>
+    <input type="text" id="sGist" placeholder="wird automatisch angelegt" value="${escHtml(Store.gistId)}">
+    <div id="sStatus" style="margin-top:10px;font-size:12px;color:#888"></div>
+    <div class="btn-row">
+      <button class="btn btn-danger btn-sm" onclick="disconnectSync()">Trennen</button>
+      <button class="btn btn-ghost btn-sm" onclick="exportData()">📤 Backup exportieren</button>
+      <label class="btn btn-ghost btn-sm" style="cursor:pointer">📥 Backup importieren
+        <input type="file" accept="application/json" style="display:none" onchange="importData(this)">
+      </label>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Speichern &amp; verbinden</button>
+    </div>`;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+
+async function saveSettings() {
+  const tok = document.getElementById('sTok').value.trim();
+  const gid = document.getElementById('sGist').value.trim();
+  const statusEl = document.getElementById('sStatus');
+  if (!tok) { alert('Bitte ein Token eingeben.'); return; }
+  Store.token = tok;
+  Store.gistId = gid;
+  localStorage.setItem(LS_TOKEN, tok);
+  localStorage.setItem(LS_GIST, gid);
+  statusEl.textContent = '🔄 Verbinde …';
+  try {
+    await Store.load();
+    statusEl.textContent = '✅ Verbunden. Gist-ID: ' + Store.gistId;
+    document.getElementById('sGist').value = Store.gistId;
+    updateConnBadge();
+    closeModal();
+    await loadTasks();
+  } catch (e) {
+    statusEl.textContent = '⚠️ Verbindung fehlgeschlagen: ' + e.message;
+  }
+}
+
+function disconnectSync() {
+  if (!confirm('GitHub-Sync trennen? Lokale Daten bleiben auf diesem Gerät erhalten, werden aber nicht mehr synchronisiert.')) return;
+  Store.token = '';
+  Store.gistId = '';
+  localStorage.removeItem(LS_TOKEN);
+  localStorage.removeItem(LS_GIST);
+  updateConnBadge();
+  closeModal();
+}
+
+function exportData() {
+  const blob = new Blob([JSON.stringify(Store.data || Store.emptyData(), null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'projektmanagement-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importData(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const parsed = JSON.parse(reader.result);
+      if (!parsed || !Array.isArray(parsed.tasks)) throw new Error('Ungültiges Format (kein tasks-Array)');
+      if (!confirm('Aktuelle Daten mit dem Datei-Inhalt überschreiben?')) return;
+      parsed.routines = parsed.routines || [];
+      parsed.routine_logs = parsed.routine_logs || [];
+      parsed.brainstorm = parsed.brainstorm || [];
+      Store.data = parsed;
+      Store.scheduleSave();
+      closeModal();
+      await loadTasks();
+      alert('Import erfolgreich.');
+    } catch (e) {
+      alert('Import fehlgeschlagen: ' + e.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ── Pomodoro State ──
+let pomoState = 'idle'; // idle | running | paused | break
+let pomoRemaining = 25 * 60;
+let pomoInterval = null;
+let pomoCountToday = parseInt(localStorage.getItem('pomoCount') || '0');
+let pomoDate = localStorage.getItem('pomoDate') || '';
+
+// Check date reset
+const today = new Date().toDateString();
+if (pomoDate !== today) {
+  pomoCountToday = 0;
+  localStorage.setItem('pomoDate', today);
+}
+localStorage.setItem('pomoCount', pomoCountToday);
+
+// ── State ──
+let allTasks = [];
+
+// ── Load ──
+// Erzwingt einen frischen Abruf vom Gist (Button "🔄 Aktualisieren") —
+// wichtig, um Änderungen von einem anderen Gerät (z.B. Handy) zu holen.
+async function syncAndReload() {
+  document.getElementById('statusLine').textContent = 'Synchronisiere …';
+  try {
+    await Store.load();
+    updateConnBadge();
+  } catch (e) {
+    setSyncStatus('⚠️ Sync fehlgeschlagen: ' + e.message);
+  }
+  await loadTasks();
+}
+
+async function loadTasks() {
+  document.getElementById('statusLine').textContent = 'Lade …';
+  try {
+    if (!Store.data) { await Store.load(); updateConnBadge(); }
+    const [td, rd] = await Promise.all([
+      api('/api/tasks'),
+      api('/api/routines')
+    ]);
+    allTasks = td.tasks || [];
+    routines = rd.routines || [];
+    document.getElementById('statusLine').textContent =
+      allTasks.length + ' Aufgaben · ' + new Date().toLocaleTimeString('de-DE');
+
+    // Update project filters
+    const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
+    const opts = projs.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
+    const filterSel = document.getElementById('projectFilter');
+    const currentVal = filterSel.value;
+    filterSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
+    filterSel.value = currentVal;
+    const ganttSel = document.getElementById('ganttProjectFilter');
+    const ganttVal = ganttSel.value;
+    ganttSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
+    ganttSel.value = ganttVal;
+    const calSel = document.getElementById('calProjectFilter');
+    const calVal = calSel.value;
+    calSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
+    calSel.value = calVal;
+
+    renderKanban();
+    renderGantt();
+    renderOverview();
+    renderCalendar();
+  } catch(e) {
+    document.getElementById('statusLine').textContent = '⚠️ Fehler beim Laden';
+    console.error(e);
+  }
+}
+
+// ── Helpers ──
+function PRIO_LABEL(p) {
+  if (typeof p === 'number') return {1:'hoch',2:'mittel',3:'niedrig'}[p]||'mittel';
+  if (['hoch','mittel','niedrig'].includes(p)) return p;
+  return 'mittel';
+}
+// Escapt auch Anführungszeichen, damit Werte in HTML-Attributen
+// (z.B. Projektfilter-Optionen) nicht abgeschnitten werden.
+function escHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function tsToDate(ts) {
+  if (!ts) return '';
+  try { return new Date(ts * 1000).toLocaleDateString('de-DE'); } catch(e) { return ''; }
+}
+function tsToDateInput(ts) {
+  if (!ts) return '';
+  try { return new Date(ts * 1000).toISOString().split('T')[0]; } catch(e) { return ''; }
+}
+function fmtMinutes(m) {
+  if (!m || m <= 0) return '';
+  if (m >= 60) return Math.floor(m/60)+'h '+ (m%60 ? m%60+'min' : '');
+  return m + 'min';
+}
+
+// ── Kanban ──
+const COLS = ['backlog','ready','running','completed','blocked'];
+const COL_NAMES = {'backlog':'📋 Backlog','ready':'🟡 Bereit','running':'🟢 In Arbeit','completed':'✅ Erledigt','blocked':'🔴 Blockiert'};
+const COL_NAMES_SHORT = {'backlog':'Backlog','ready':'Bereit','running':'In Arbeit','completed':'Erledigt','blocked':'Blockiert'};
+const PRIO_C = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+
+// Karten mit unbekanntem Status dürfen nicht aus dem Board verschwinden —
+// sie landen im Backlog.
+function kanbanCol(t) {
+  return COLS.includes(t.status) ? t.status : 'backlog';
+}
+
+function renderKanban() {
+  const filter = document.getElementById('projectFilter').value;
+  const kanban = document.getElementById('kanban');
+  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
+  kanban.innerHTML = COLS.map(col => {
+    const items = filtered.filter(t => kanbanCol(t) === col);
+    return `<div class="column">
+      <div class="col-header">
+        <h3>${COL_NAMES[col]}</h3>
+        <span class="col-count">${items.length}</span>
+      </div>
+      <div class="col-body" data-col="${col}">
+        ${items.length ? items.map(t => renderCard(t)).join('') :
+          '<div class="empty-state">— leer —</div>'}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderCard(t) {
+  const prio = PRIO_LABEL(t.priority);
+  const bodyShort = t.body ? t.body.substring(0, 80) + (t.body.length > 80 ? '…' : '') : '';
+  const startStr = tsToDate(t.started_at);
+  const dueStr = tsToDate(t.completed_at);
+  const datesHtml = (startStr || dueStr)
+    ? `<div class="card-dates">${startStr ? '📅 '+startStr : ''} ${dueStr ? '→ '+dueStr : ''}</div>`
+    : '';
+  const estHtml = t.estimated_minutes > 0
+    ? `<div class="card-est">🕐 ${fmtMinutes(t.estimated_minutes)}${t.buffer_percent ? ' +'+t.buffer_percent+'% Puffer' : ''}</div>`
+    : '';
+  const projHtml = t.project_id ? `<span style="background:#e5e7eb;border-radius:3px;padding:1px 5px;font-size:9px;color:#555">📁 ${escHtml(t.project_id)}</span>` : '';
+  return `<div class="card prio-${prio}" data-task-id="${t.id}" onclick="editTask('${t.id}')">
+    <div class="card-actions" onclick="event.stopPropagation()">
+      <button onclick="event.stopPropagation();startPomoForTask('${t.id}')" title="Fokus">🍅</button>
+      <button onclick="deleteTask('${t.id}')" title="Löschen">🗑</button>
+    </div>
+    <div class="card-title">${escHtml(t.title)}</div>
+    ${bodyShort ? `<div class="card-body">${escHtml(bodyShort)}</div>` : ''}
+    ${estHtml}
+    ${datesHtml}
+    <div class="card-meta">
+      <span style="color:${PRIO_C[prio]||'#999'};font-weight:600">${prio}</span>
+      ${projHtml}
+      <select class="status-select" autocomplete="off" onclick="event.stopPropagation()">
+        ${COLS.includes(t.status) ? '' : `<option value="" selected>⚠ ${escHtml(t.status||'—')}</option>`}
+        ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${COL_NAMES_SHORT[s]||s}</option>`).join('')}
+      </select>
+    </div>
+  </div>`;
+}
+
+// ── Status + Delete ──
+async function changeStatus(id, newStatus) {
+  if (!COLS.includes(newStatus)) return;
+  const t = allTasks.find(x => x.id === id);
+  if (t && t.status === newStatus) return;
+  try {
+    await api('/api/tasks/'+id+'/status', {method:'POST', body:JSON.stringify({status:newStatus})});
+  } finally {
+    await loadTasks();
+  }
+}
+
+// Delegierter Listener statt Inline-onchange: reagiert nur auf echte
+// Nutzer-Interaktion (isTrusted), nicht auf synthetische Events von
+// Extensions/Skripten.
+document.getElementById('kanban').addEventListener('change', (e) => {
+  if (!e.isTrusted) return;
+  const sel = e.target.closest('.status-select');
+  if (!sel) return;
+  const card = sel.closest('.card');
+  if (card && card.dataset.taskId) changeStatus(card.dataset.taskId, sel.value);
+});
+async function deleteTask(id) {
+  if (!confirm('Aufgabe löschen?')) return;
+  await api('/api/tasks/'+id, {method:'DELETE'});
+  await loadTasks();
+}
+
+// ── Create Modal ──
+function openCreateModal() {
+  document.getElementById('modalTitle').textContent = 'Neue Aufgabe';
+  document.getElementById('modalBody').innerHTML = `
+    <label>Titel *</label>
+    <input type="text" id="fTitle" placeholder="Aufgabe …" autofocus>
+    <label>Beschreibung</label>
+    <textarea id="fBody" placeholder="Details …"></textarea>
+    <div class="row2">
+      <div><label>Start</label><input type="date" id="fStart"></div>
+      <div><label>Ziel</label><input type="date" id="fDue"></div>
+    </div>
+    <div class="row3">
+      <div><label>⏱ Aufwand</label><input type="number" id="fEst" placeholder="Minuten" min="0" step="5"></div>
+      <div><label>📊 Puffer</label>
+        <select id="fBuf">
+          <option value="0">0%</option>
+          <option value="10">10%</option>
+          <option value="20" selected>20%</option>
+          <option value="30">30%</option>
+          <option value="50">50%</option>
+          <option value="100">100%</option>
+        </select>
+      </div>
+      <div><label>Priorität</label>
+        <select id="fPrio">
+          <option value="hoch">🔴 Hoch</option>
+          <option value="mittel" selected>🟡 Mittel</option>
+          <option value="niedrig">🟢 Niedrig</option>
+        </select>
+      </div>
+    </div>
+    <label>📁 Projekt</label>
+    <select id="fProject" onchange="if(this.value==='__new__'){this.style.display='none';document.getElementById('fProjectNew').style.display='block';document.getElementById('fProjectNew').focus()}">
+      <option value="">— Keins —</option>
+      <option value="__new__">➕ Neu …</option>
+    </select>
+    <input type="text" id="fProjectNew" style="display:none" placeholder="Neues Projekt …">
+    <label>Status</label>
+    <select id="fStatus">
+      <option value="backlog">📋 Backlog</option>
+      <option value="ready" selected>🟡 Bereit</option>
+      <option value="running">🟢 In Arbeit</option>
+      <option value="blocked">🔴 Blockiert</option>
+    </select>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-primary" onclick="createTask()">Erstellen</button>
+    </div>`;
+  // Populate project select
+  const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
+  const projSel = document.getElementById('fProject');
+  if (projSel) {
+    const cur = projSel.value;
+    projSel.innerHTML = '<option value="">— Keins —</option>'
+      + projs.map(p => '<option value="'+escHtml(p)+'">'+escHtml(p)+'</option>').join('')
+      + '<option value="__new__">➕ Neu …</option>';
+    projSel.value = cur;
+  }
+  document.getElementById('modalOverlay').classList.add('show');
+  setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
+}
+
+async function createTask() {
+  const title = document.getElementById('fTitle').value.trim();
+  if (!title) { alert('Titel ist Pflicht!'); return; }
+  const projSel = document.getElementById('fProject');
+  const projNew = document.getElementById('fProjectNew');
+  const project = projNew.style.display !== 'none' && projNew.value.trim()
+    ? projNew.value.trim() : projSel.value;
+  await api('/api/tasks', {method:'POST', body:JSON.stringify({
+    title,
+    body: document.getElementById('fBody').value.trim(),
+    priority: document.getElementById('fPrio').value,
+    project,
+    status: document.getElementById('fStatus').value,
+    start_date: document.getElementById('fStart').value,
+    due_date: document.getElementById('fDue').value,
+    estimated_minutes: parseInt(document.getElementById('fEst').value) || 0,
+    buffer_percent: parseInt(document.getElementById('fBuf').value) || 20,
+  })});
+  closeModal();
+  await loadTasks();
+}
+
+// ── Edit Modal ──
+async function editTask(id) {
+  const t = allTasks.find(x => x.id === id);
+  if (!t) return;
+  const prio = PRIO_LABEL(t.priority);
+
+  document.getElementById('modalTitle').textContent = '✏️ Aufgabe bearbeiten';
+  document.getElementById('modalBody').innerHTML = `
+    <label>Titel</label>
+    <input type="text" id="fTitle" value="${escHtml(t.title)}">
+    <label>Beschreibung</label>
+    <textarea id="fBody">${escHtml(t.body||'')}</textarea>
+    <div class="row2">
+      <div><label>Start</label><input type="date" id="fStart" value="${tsToDateInput(t.started_at)}"></div>
+      <div><label>Ziel</label><input type="date" id="fDue" value="${tsToDateInput(t.completed_at)}"></div>
+    </div>
+    <div class="row3">
+      <div><label>⏱ Aufwand</label><input type="number" id="fEst" value="${t.estimated_minutes||0}" min="0" step="5" placeholder="Minuten"></div>
+      <div><label>📊 Puffer</label>
+        <select id="fBuf">
+          ${[0,10,20,30,50,100].map(v => `<option value="${v}" ${(t.buffer_percent||20)==v?'selected':''}>${v}%</option>`).join('')}
+        </select>
+      </div>
+      <div><label>Priorität</label>
+        <select id="fPrio">
+          <option value="hoch" ${prio==='hoch'?'selected':''}>🔴 Hoch</option>
+          <option value="mittel" ${prio==='mittel'?'selected':''}>🟡 Mittel</option>
+          <option value="niedrig" ${prio==='niedrig'?'selected':''}>🟢 Niedrig</option>
+        </select>
+      </div>
+    </div>
+    <label>📁 Projekt</label>
+    <select id="fProject" onchange="if(this.value==='__new__'){this.style.display='none';document.getElementById('fProjectNew').style.display='block';document.getElementById('fProjectNew').focus()}">
+      <option value="">— Keins —</option>
+      <option value="__new__">➕ Neu …</option>
+    </select>
+    <input type="text" id="fProjectNew" style="display:none" placeholder="Neues Projekt …">
+    <div class="row2">
+      <div><label>Status</label>
+        <select id="fStatus" autocomplete="off">
+          ${COLS.includes(t.status) ? '' : `<option value="" selected>⚠ ${escHtml(t.status||'—')}</option>`}
+          ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${COL_NAMES[s]}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:8px">
+        <button class="btn btn-pomo btn-sm" onclick="startPomoForTask('${t.id}')">🍅 Fokus</button>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-danger" onclick="deleteTask('${t.id}')">🗑 Löschen</button>
+      <button class="btn btn-primary" onclick="saveTask('${t.id}')">Speichern</button>
+    </div>`;
+  document.getElementById('fStatus').addEventListener('change', (e) => {
+    if (e.isTrusted) changeStatus(t.id, e.target.value);
+  });
+  // Populate project select and set current value
+  const projs2 = [...new Set(allTasks.map(x => x.project_id).filter(Boolean))].sort();
+  const projSel2 = document.getElementById('fProject');
+  if (projSel2) {
+    projSel2.innerHTML = '<option value="">— Keins —</option>'
+      + projs2.map(p => '<option value="'+escHtml(p)+'">'+escHtml(p)+'</option>').join('')
+      + '<option value="__new__">➕ Neu …</option>';
+    projSel2.value = t.project_id || '';
+  }
+  document.getElementById('modalOverlay').classList.add('show');
+  setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
+}
+
+async function saveTask(id) {
+  const projSel = document.getElementById('fProject');
+  const projNew = document.getElementById('fProjectNew');
+  const project = projNew && projNew.style.display !== 'none' && projNew.value.trim()
+    ? projNew.value.trim() : (projSel ? projSel.value : '');
+  await api('/api/tasks/'+id, {method:'PUT', body:JSON.stringify({
+    title: document.getElementById('fTitle').value.trim(),
+    body: document.getElementById('fBody').value.trim(),
+    priority: document.getElementById('fPrio').value,
+    project,
+    start_date: document.getElementById('fStart').value,
+    due_date: document.getElementById('fDue').value,
+    estimated_minutes: parseInt(document.getElementById('fEst').value) || 0,
+    buffer_percent: parseInt(document.getElementById('fBuf').value) || 20,
+  })});
+  closeModal();
+  await loadTasks();
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('show');
+}
+
+// ── Gantt ──
+function renderGantt() {
+  const wrap = document.getElementById('ganttWrap');
+  const filter = document.getElementById('ganttProjectFilter').value;
+  if (!allTasks.length) {
+    wrap.innerHTML = '<div class="empty-state">Keine Aufgaben vorhanden</div>';
+    return;
+  }
+  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
+  const dated = filtered.filter(t => t.started_at || t.completed_at);
+  if (!dated.length) {
+    wrap.innerHTML = '<div class="empty-state">Keine Aufgaben mit Datum. Setze Start/Ziel in den Karten.</div>';
+    return;
+  }
+  const now = Date.now() / 1000;
+  const day = 86400;
+  const sorted = [...dated].sort((a,b) => {
+    const pa = typeof a.priority === 'number' ? a.priority : ({hoch:1,mittel:2,niedrig:3}[a.priority]||2);
+    const pb = typeof b.priority === 'number' ? b.priority : ({hoch:1,mittel:2,niedrig:3}[b.priority]||2);
+    if (pa !== pb) return pa - pb;
+    return (a.created_at||0) - (b.created_at||0);
+  });
+  const tasks = sorted.map(t => {
+    const prioVal = typeof t.priority === 'number' ? t.priority : ({hoch:1,mittel:2,niedrig:3}[t.priority]||2);
+    const start = t.started_at || t.created_at || now;
+    let end = t.completed_at || now;
+    if (!t.completed_at && t.status !== 'completed') {
+      end = now + (prioVal === 1 ? 7*day : prioVal === 2 ? 14*day : 30*day);
+    }
+    return {...t, _start: start, _end: end};
+  });
+  const minT = Math.min(...tasks.map(t => t._start));
+  const maxT = Math.max(...tasks.map(t => t._end), now + 7*day);
+  const range = maxT - minT || day;
+  function pct(val) { return Math.max(2, ((val - minT) / range) * 100); }
+
+  let html = '<table class="gantt-table"><thead><tr><th>Projekt</th><th>Prio</th><th>Status</th><th>Aufwand</th><th>📁 Projekt</th><th>Start</th><th>Ziel</th></tr></thead><tbody>';
+  tasks.forEach(t => {
+    const prio = PRIO_LABEL(t.priority);
+    const estStr = t.estimated_minutes > 0 ? fmtMinutes(t.estimated_minutes) + (t.buffer_percent ? ' +'+t.buffer_percent+'%' : '') : '—';
+    html += `<tr>
+      <td><strong style="${t.status==='completed'?'text-decoration:line-through;color:#999':''}">${escHtml(t.title)}</strong></td>
+      <td><span style="color:${PRIO_C[prio]};font-weight:600">${prio}</span></td>
+      <td>${COL_NAMES[t.status]||t.status}</td>
+      <td style="color:#7C3AED;font-weight:500;font-size:12px">${estStr}</td>
+      <td style="font-size:12px">${escHtml(t.project_id||'—')}</td>
+      <td class="gantt-date">${t.started_at ? tsToDate(t.started_at) : (t.created_at ? tsToDate(t.created_at) : '—')}</td>
+      <td class="gantt-date">${t.completed_at ? tsToDate(t.completed_at) : (t.status==='completed' ? '—' : 'offen')}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+
+  html += '<div class="gantt-timeline"><div class="tl-label">📈 Zeitverlauf</div>';
+  tasks.forEach(t => {
+    const prio = PRIO_LABEL(t.priority);
+    const left = pct(t._start);
+    const width = Math.max(3, pct(t._end) - left);
+    const opacity = t.status === 'completed' ? '0.5' : '1';
+    html += `<div class="timeline-row">
+      <div class="timeline-label" title="${escHtml(t.title)}" style="${t.status==='completed'?'text-decoration:line-through;color:#999':''}">${escHtml(t.title)}</div>
+      <div class="timeline-track">
+        <div class="timeline-fill" style="left:${left}%;width:${width}%;background:${PRIO_C[prio]};opacity:${opacity}"></div>
+        <div class="timeline-text" style="left:${left}%;width:${width}%">${escHtml(t.title)}</div>
+      </div>
+    </div>`;
+  });
+  const todayPct = pct(now);
+  html += `<div style="position:relative;height:0;margin-top:-4px">
+    <div style="position:absolute;left:${todayPct}%;top:0;width:2px;height:${tasks.length*28+12}px;background:#DD3221;z-index:2"></div>
+    <div style="position:absolute;left:${todayPct}%;top:-2px;font-size:10px;color:#DD3221;font-weight:600;transform:translateX(-50%)">▼ Heute</div>
+  </div>`;
+  html += '</div>';
+  wrap.innerHTML = html;
+
+  // --- Routinen Section ---
+  const rWrap = document.getElementById('routinesOverview');
+  if (rWrap) {
+    const addBtn = '<button class="btn btn-ghost btn-sm" onclick="addRoutine()">+ Routine</button>';
+    if (!routines.length) {
+      rWrap.innerHTML = '<div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">'
+        + '<h3 style="font-size:14px;color:#002D69">🔄 Tägliche Routinen</h3>' + addBtn + '</div>'
+        + '<div style="text-align:center;color:#aaa;padding:20px;font-size:13px">Keine Routinen angelegt</div>';
+    } else {
+      let rh = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">';
+      routines.forEach(r => {
+        const freqLabels = {'daily':'täglich','weekly':'wöchentlich','biweekly':'14-tägig','monthly':'monatlich'};
+        const done = r.done_today;
+        rh += '<div style="background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;align-items:center;gap:10px;border-left:4px solid '+(done?'#059669':'#e5e7eb')+';cursor:pointer" onclick="toggleRoutine('+r.id+')">'
+          + '<div style="width:28px;height:28px;border-radius:50%;background:'+(done?'#059669':'#e5e7eb')+';color:'+(done?'#fff':'#999')+';display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">'+(done?'✓':'')+'</div>'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="font-size:12px;font-weight:600;color:'+(done?'#999':'#1a1a2e')+'">'+escHtml(r.name)+'</div>'
+          + '<div style="font-size:10px;color:#888">'+escHtml(freqLabels[r.freq]||r.freq||r.category||'')+(r.days?' · '+r.days:'')+'</div>'
+          + '</div>'
+          + (r.last_done ? '<div style="font-size:9px;color:#999;flex-shrink:0">'+new Date(r.last_done*1000).toLocaleDateString('de-DE',{weekday:'short',day:'2-digit'})+'</div>' : '')
+          + '<button onclick="event.stopPropagation();deleteRoutine('+r.id+')" title="Löschen" style="background:none;border:none;cursor:pointer;color:#ccc;font-size:13px;flex-shrink:0">🗑</button>'
+          + '</div>';
+      });
+      rh += '</div>';
+      rWrap.innerHTML = '<div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        + '<h3 style="font-size:14px;color:#002D69">🔄 Tägliche Routinen</h3>' + addBtn + '</div>' + rh;
+    }
+  }
+}
+
+// ── Pomodoro ──
+function togglePomo() {
+  const overlay = document.getElementById('pomoOverlay');
+  overlay.classList.toggle('show');
+  if (!overlay.classList.contains('show')){
+    pomoReset();
+  }
+}
+
+function startPomoForTask(taskId) {
+  const t = allTasks.find(x => x.id === taskId);
+  if (!t) return;
+  document.getElementById('pomoTask').textContent = '🍅 ' + t.title;
+  togglePomo();
+}
+
+function pomoStart() {
+  if (pomoState === 'idle' || pomoState === 'paused' || pomoState === 'break') {
+    if (pomoState === 'idle' || pomoState === 'break') {
+      pomoRemaining = pomoState === 'break' ? 5 * 60 : 25 * 60;
+      pomoState = pomoState === 'break' ? 'break' : 'running';
+    } else {
+      pomoState = 'running';
+    }
+    document.getElementById('pomoBtn').textContent = '⏸ Pause';
+    document.getElementById('pomoPhase').textContent = pomoState === 'break' ? '☕ Pause' : '🍅 Fokus';
+    document.getElementById('pomoTimer').className = 'timer' + (pomoState === 'break' ? ' break' : '');
+    if (pomoInterval) clearInterval(pomoInterval);
+    pomoInterval = setInterval(pomoTick, 1000);
+  } else if (pomoState === 'running') {
+    pomoState = 'paused';
+    document.getElementById('pomoBtn').textContent = '▶ Weiter';
+    document.getElementById('pomoPhase').textContent = '⏸ Pausiert';
+    document.getElementById('pomoTimer').className = 'timer pause';
+    if (pomoInterval) clearInterval(pomoInterval);
+  }
+}
+
+function pomoReset() {
+  if (pomoInterval) clearInterval(pomoInterval);
+  pomoInterval = null;
+  pomoState = 'idle';
+  pomoRemaining = 25 * 60;
+  document.getElementById('pomoTimer').textContent = '25:00';
+  document.getElementById('pomoTimer').className = 'timer';
+  document.getElementById('pomoBtn').textContent = '▶ Start';
+  document.getElementById('pomoPhase').textContent = '🍅 Fokus';
+  document.getElementById('pomoTask').textContent = 'Keine Aufgabe ausgewählt';
+  updatePomoCount();
+}
+
+function pomoTick() {
+  pomoRemaining--;
+  if (pomoRemaining <= 0) {
+    if (pomoState === 'running') {
+      // Session complete
+      pomoCountToday++;
+      localStorage.setItem('pomoCount', pomoCountToday);
+      localStorage.setItem('pomoDate', today);
+      updatePomoCount();
+      if (pomoInterval) clearInterval(pomoInterval);
+      pomoState = 'break';
+      pomoRemaining = 5 * 60;
+      document.getElementById('pomoPhase').textContent = '☕ Pause — gut gemacht!';
+      document.getElementById('pomoTimer').className = 'timer break';
+      document.getElementById('pomoBtn').textContent = '▶ Pause starten';
+      try {
+        if (Notification.permission === 'granted') {
+          new Notification('🍅 Pomodoro abgeschlossen!', {body: '5 Minuten Pause.'});
+        }
+      } catch(e) {}
+      return;
+    } else if (pomoState === 'break') {
+      if (pomoInterval) clearInterval(pomoInterval);
+      pomoState = 'idle';
+      pomoRemaining = 25 * 60;
+      document.getElementById('pomoPhase').textContent = '🍅 Bereit für nächste Runde!';
+      document.getElementById('pomoTimer').textContent = '25:00';
+      document.getElementById('pomoTimer').className = 'timer';
+      document.getElementById('pomoBtn').textContent = '▶ Start';
+      try {
+        if (Notification.permission === 'granted') {
+          new Notification('☕ Pause vorbei!', {body: 'Nächster Fokus-Durchgang.'});
+        }
+      } catch(e) {}
+      return;
+    }
+  }
+  const m = Math.floor(pomoRemaining / 60);
+  const s = pomoRemaining % 60;
+  document.getElementById('pomoTimer').textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  // Update browser title
+  document.title = '🍅 ' + document.getElementById('pomoTimer').textContent + ' · Projekte';
+}
+
+function updatePomoCount() {
+  document.getElementById('pomoCount').textContent = '🍅 ' + pomoCountToday + ' Today';
+}
+
+// Request notification permission on interaction
+document.addEventListener('click', () => {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}, {once: true});
+
+// ── Project Overview ──
+function renderOverview() {
+  const wrap = document.getElementById('overviewWrap');
+  if (!allTasks.length) {
+    wrap.innerHTML = '<div class="empty-state">Keine Aufgaben vorhanden</div>';
+    return;
+  }
+  const byProj = {};
+  allTasks.forEach(t => {
+    const p = t.project_id || '(ohne Projekt)';
+    if (!byProj[p]) byProj[p] = [];
+    byProj[p].push(t);
+  });
+  const projNames = Object.keys(byProj).sort();
+  const colors = {'backlog':'#e5e7eb','ready':'#f59e0b','running':'#059669','completed':'#002D69','blocked':'#DC2626'};
+  let totalEst = 0, totalBuf = 0, totalTasks = allTasks.length;
+  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">';
+  projNames.forEach(p => {
+    const tasks = byProj[p];
+    const count = tasks.length;
+    const est = tasks.reduce((s,t) => s + (t.estimated_minutes||0), 0);
+    const buf = tasks.reduce((s,t) => s + Math.round((t.estimated_minutes||0) * (t.buffer_percent||20) / 100), 0);
+    totalEst += est; totalBuf += buf;
+    const byStatus = {};
+    tasks.forEach(t => { byStatus[t.status] = (byStatus[t.status]||0) + 1; });
+    const starts = tasks.map(t => t.started_at||t.created_at).filter(Boolean).sort();
+    const ends = tasks.map(t => t.completed_at).filter(Boolean).sort();
+    const first = starts.length ? tsToDate(starts[0]) : '—';
+    const last = ends.length ? tsToDate(ends[ends.length-1]) : 'offen';
+    const pctDone = tasks.filter(t => t.status==='completed').length / count * 100;
+    html += '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      + '<h3 style="font-size:15px;color:#002D69;font-weight:600;cursor:pointer" onclick="filterProject(\''+escHtml(p)+'\')">📁 '+escHtml(p)+'</h3>'
+      + '<span style="font-size:12px;color:#888;font-weight:500">'+count+' Aufgaben</span></div>'
+      + '<div style="height:6px;background:#e5e7eb;border-radius:3px;margin-bottom:10px;overflow:hidden">'
+      + '<div style="height:100%;width:'+Math.round(pctDone)+'%;background:#059669;border-radius:3px;transition:width .5s"></div></div>'
+      + '<table style="width:100%;font-size:12px;border-collapse:collapse">'
+      + '<tr><td style="padding:2px 4px;color:#666">⏱ Aufwand</td><td style="padding:2px 4px;font-weight:600">'+_fmtM(est)+(buf?' + '+_fmtM(buf)+' Puffer':'')+'</td></tr>'
+      + '<tr><td style="padding:2px 4px;color:#666">📅 Start</td><td style="padding:2px 4px">'+first+'</td></tr>'
+      + '<tr><td style="padding:2px 4px;color:#666">🎯 Ende</td><td style="padding:2px 4px">'+last+'</td></tr>'
+      + '<tr><td style="padding:2px 4px;color:#666">📊 Status</td><td style="padding:2px 4px">'
+      + Object.entries(byStatus).map(([s,c]) => '<span style="display:inline-block;background:'+(colors[s]||'#999')+';color:'+(s==='backlog'?'#666':'#fff')+';border-radius:4px;padding:1px 6px;font-size:10px;margin:1px">'+(COL_NAMES_SHORT[s]||s)+' '+c+'</span>').join(' ')
+      + '</td></tr></table></div>';
+  });
+  html += '</div>';
+
+  // --- Charts: Zeitverteilung ---
+  const now = new Date();
+  const dayMs = 86400000;
+  const projColors = ['#002D69','#DD3221','#f59e0b','#059669','#7C3AED','#DC2626','#6b7280','#007FA7','#84cc16','#ec4899'];
+
+  // 1) Pie: Geplante Zeit diese Woche nach Projekt
+  const weekStart = new Date(now); weekStart.setDate(now.getDate()-now.getDay()+1); weekStart.setHours(0,0,0,0);
+  const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate()+7);
+  const ws = Math.floor(weekStart.getTime()/1000);
+  const we = Math.floor(weekEnd.getTime()/1000);
+  const weekTasks = allTasks.filter(t => {
+    const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+    return s && s < we && e >= ws && (t.estimated_minutes||0) > 0;
+  });
+  const byProjWeek = {};
+  weekTasks.forEach(t => {
+    const p = t.project_id || 'Unsortiert';
+    byProjWeek[p] = (byProjWeek[p]||0) + (t.estimated_minutes||0);
+  });
+  const wpEntries = Object.entries(byProjWeek).sort((a,b) => b[1]-a[1]);
+  const wpTotal = wpEntries.reduce((s,[_,v]) => s+v, 0);
+  let pieHtml = '';
+  if (wpTotal > 0) {
+    let conic = wpEntries.map(([p,v],i) => {
+      const pct = v/wpTotal*100;
+      const angle = i===0 ? 0 : wpEntries.slice(0,i).reduce((s,[_,x]) => s + x/wpTotal*360, 0);
+      return projColors[i%projColors.length]+' '+angle+'deg '+(angle+v/wpTotal*360)+'deg';
+    }).join(', ');
+    pieHtml = '<div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap">'
+      + '<div style="width:120px;height:120px;border-radius:50%;background:conic-gradient('+conic+');flex-shrink:0"></div>'
+      + '<div style="font-size:12px">'
+      + wpEntries.map(([p,v],i) => '<div style="margin:2px 0"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+projColors[i%projColors.length]+';margin-right:6px;vertical-align:middle"></span>'+escHtml(p)+' <strong>'+_fmtM(v)+'</strong></div>').join('')
+      + '</div></div>';
+  } else {
+    pieHtml = '<div style="color:#aaa;font-size:13px;padding:10px">Keine geplanten Aufgaben diese Woche mit Datum</div>';
+  }
+
+  // 2) Bar Chart: Wöchentlicher Aufwand letzte 6 Wochen
+  let barHtml = '<div style="display:flex;align-items:end;gap:6px;height:120px;padding:10px 0">';
+  for (let w = 5; w >= 0; w--) {
+    const wStart = new Date(now); wStart.setDate(now.getDate()-now.getDay()+1 - w*7); wStart.setHours(0,0,0,0);
+    const wEnd = new Date(wStart); wEnd.setDate(wStart.getDate()+7);
+    const wst = Math.floor(wStart.getTime()/1000);
+    const wet = Math.floor(wEnd.getTime()/1000);
+    const wTasks = allTasks.filter(t => {
+      const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+      return s && s < wet && e >= wst && (t.estimated_minutes||0) > 0;
+    });
+    const wEst = wTasks.reduce((s,t) => s+(t.estimated_minutes||0), 0);
+    const maxH = 100;
+    const h = Math.min(maxH, wEst/60); // 1h = 1px roughly
+    barHtml += '<div style="flex:1;display:flex;flex-direction:column;align-items:center">'
+      + '<div style="width:100%;background:#002D69;border-radius:4px 4px 0 0;height:'+h+'px;min-height:'+(wEst>0?4:0)+'px;transition:height .3s"></div>'
+      + '<div style="font-size:9px;color:#666;margin-top:4px;text-align:center">'+wStart.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})+'</div>'
+      + '<div style="font-size:9px;color:#999">'+_fmtM(wEst)+'</div>'
+      + '</div>';
+  }
+  barHtml += '</div>';
+
+  // Charts section
+  html += '<div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+    + '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+    + '<h3 style="font-size:14px;color:#002D69;margin-bottom:12px">🥧 Geplante Zeit diese Woche</h3>'
+    + pieHtml
+    + '</div>'
+    + '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+    + '<h3 style="font-size:14px;color:#002D69;margin-bottom:12px">📊 Wöchentlicher Aufwand (6 Wochen)</h3>'
+    + barHtml
+    + '</div>'
+    + '</div>';
+
+  // Totals bar
+  const totalDone = allTasks.filter(t => t.status==='completed').length;
+  html += '<div style="margin-top:16px;background:#fff;border-radius:10px;padding:14px 16px;display:flex;gap:24px;flex-wrap:wrap;font-size:13px">'
+    + '<span>📊 <strong>'+totalTasks+'</strong> Aufgaben</span>'
+    + '<span>⏱ <strong>'+_fmtM(totalEst)+'</strong> geschätzt <span style="color:#888">(+ '+_fmtM(totalBuf)+' Puffer)</span></span>'
+    + '<span>✅ <strong>'+totalDone+'</strong> erledigt <span style="color:#888">('+(totalTasks?Math.round(totalDone/totalTasks*100):0)+'%)</span></span>'
+    + '</div>';
+  wrap.innerHTML = html;
+}
+function _fmtM(m) { if (!m||m<=0)return'0min'; if(m>=60)return Math.floor(m/60)+'h '+(m%60?m%60+'min':''); return m+'min'; }
+
+// ── Jump to Kanban with project filter ──
+function filterProject(name) {
+  document.getElementById('projectFilter').value = name;
+  switchTab('kanban');
+  renderKanban();
+}
+
+// ── Routinen ──
+let routines = [];
+async function toggleRoutine(id) {
+  await api('/api/routines/'+id+'/toggle', {method:'POST'});
+  await loadTasks();
+}
+
+// ── Calendar View ──
+let calOffset = 0;
+let calView = 'week';
+function calSetView(v) {
+  calView = v;
+  document.querySelectorAll('.cal-vw').forEach(b => {
+    b.style.background = b.dataset.vw === v ? '#002D69' : '#e5e7eb';
+    b.style.color = b.dataset.vw === v ? '#fff' : '#666';
+  });
+  renderCalendar();
+}
+function calNav(d) {
+  if (calView === 'month') calOffset += d;
+  else if (calView === 'year') calOffset += d;
+  else calOffset += d;
+  renderCalendar();
+}
+function calToday() { calOffset = 0; renderCalendar(); }
+
+function renderCalendar() {
+  const wrap = document.getElementById('calendarWrap');
+  if (calView === 'week') return renderCalWeek(wrap);
+  if (calView === 'day') return renderCalDay(wrap);
+  if (calView === 'month') return renderCalMonth(wrap);
+  renderCalYear(wrap);
+}
+
+function renderCalWeek(wrap) {
+  const now = new Date();
+  const day = now.getDay();
+  const diff = now.getDate() - day + (day === 0 ? -6 : 1) + calOffset * 7;
+  const start = new Date(now.setDate(diff)); start.setHours(0,0,0,0);
+  const days = Array.from({length:7}, (_,i) => { const d=new Date(start); d.setDate(d.getDate()+i); return d; });
+  const fmt = d => d.toLocaleDateString('de-DE', {weekday:'short', day:'2-digit', month:'2-digit'});
+  const isToday = d => {const t=new Date(); return d.getFullYear()===t.getFullYear()&&d.getMonth()===t.getMonth()&&d.getDate()===t.getDate();};
+  document.getElementById('calLabel').textContent = fmt(days[0]) + ' – ' + fmt(days[6]);
+  const dayTs = days.map(d => Math.floor(d.getTime()/1000));
+  const nextDayTs = days.map(d => Math.floor(new Date(d.getFullYear(),d.getMonth(),d.getDate()+1).getTime()/1000));
+  const byDay = days.map(()=>[]);
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
+  calDated.forEach(t => {
+    const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+    if (!s) return;
+    for (let i=0;i<7;i++) if (s<nextDayTs[i]&&e>=dayTs[i]) byDay[i].push(t);
+  });
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  let h = '<table style="width:100%;border-collapse:collapse;table-layout:fixed;min-width:700px"><thead><tr>';
+  days.forEach((d,i) => {
+    const t = isToday(d) ? ' style="background:#002D69;color:#fff;border-radius:6px 6px 0 0"' : '';
+    h += '<th'+t+' style="padding:8px 6px;font-size:12px;text-align:center;font-weight:600">'+fmt(d)+'</th>';
+  });
+  h += '</tr></thead><tbody><tr>';
+  days.forEach((d,i) => {
+    const t = isToday(d) ? ' style="background:#f0f4ff"' : '';
+    h += '<td'+t+' style="vertical-align:top;padding:4px;border:1px solid #e5e7eb;height:120px;width:14.28%">';
+    if (byDay[i].length) byDay[i].forEach(t => {
+      const p = PRIO_LABEL(t.priority);
+      h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:4px;padding:2px 4px;margin-bottom:2px;font-size:10px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'+(t.status==='completed'?'opacity:0.5;text-decoration:line-through':'')+'" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title)+'</div>';
+    });
+    h += '</td>';
+  });
+  h += '</tr></tbody></table>';
+  h += '<div style="margin-top:8px;font-size:11px;color:#888;display:flex;gap:12px;flex-wrap:wrap">';
+  Object.entries(colors).forEach(([p,c]) => h += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+c+';margin-right:4px;vertical-align:middle"></span>'+p+'</span>');
+  h += '</div>';
+  wrap.innerHTML = h;
+}
+
+function renderCalDay(wrap) {
+  const now = new Date();
+  now.setDate(now.getDate() + calOffset);
+  const fmt = d => d.toLocaleDateString('de-DE', {weekday:'long', day:'2-digit', month:'long', year:'numeric'});
+  document.getElementById('calLabel').textContent = fmt(now);
+  const dayStart = Math.floor(new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime()/1000);
+  const dayEnd = dayStart + 86400;
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
+  const tasks = calDated.filter(t => {
+    const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+    return s && s < dayEnd && e >= dayStart;
+  });
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const isToday = new Date().toDateString() === now.toDateString();
+  let h = '<div style="background:'+(isToday?'#f0f4ff':'#fff')+';border-radius:8px;padding:16px;min-height:400px">';
+  if (!tasks.length) {
+    h += '<div class="empty-state">Keine Aufgaben an diesem Tag</div>';
+  } else {
+    h += '<div style="display:flex;flex-direction:column;gap:6px">';
+    tasks.sort((a,b) => (a.priority||2)-(b.priority||2));
+    tasks.forEach(t => {
+      const prio = PRIO_LABEL(t.priority);
+      const done = t.status === 'completed';
+      h += '<div class="cal-day-card" data-id="'+t.id+'" style="border-left:4px solid '+(colors[prio]||'#999')+';background:'+(done?'#f9f9f9':'#fff')+';border-radius:6px;padding:10px 12px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;align-items:center;gap:10px">'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:13px;font-weight:600;color:'+(done?'#999':'#1a1a2e')+';'+(done?'text-decoration:line-through':'')+'">'+escHtml(t.title)+'</div>'
+        + '<div style="font-size:10px;color:#888;margin-top:2px;display:flex;gap:8px">'
+        + '<span style="color:'+(colors[prio]||'#999')+';font-weight:600">'+prio+'</span>'
+        + (t.project_id ? '<span>📁 '+escHtml(t.project_id)+'</span>' : '')
+        + '<span>'+(COL_NAMES[t.status]||t.status)+'</span>'
+        + (t.estimated_minutes ? '<span>🕐 '+_fmtM(t.estimated_minutes)+'</span>' : '')
+        + '</div></div>'
+        + '</div>';
+    });
+    h += '</div>';
+  }
+  h += '</div>'; // close else
+  // Routines section
+  if (routines.length) {
+    h += '<h3 style="font-size:14px;color:#002D69;margin:16px 0 8px">🔄 Routinen</h3>'
+      + '<div style="display:flex;flex-direction:column;gap:6px">';
+    routines.forEach(r => {
+      // Show routines matching today
+      const isTodayRoutine = r.freq === 'daily' || (function() {
+        const dayEn = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+        const todayEn = dayEn[new Date().getDay()];
+        if (r.freq === 'weekly' && r.days && r.days.includes(todayEn)) return true;
+        if (r.freq === 'biweekly' && r.days && r.days.includes(todayEn)) {
+          // Every other week: use even/odd week check
+          const weekNum = Math.floor((new Date() - new Date(new Date().getFullYear(),0,1)) / 604800000);
+          return weekNum % 2 === 0;
+        }
+        if (r.freq === 'monthly' && r.days) {
+          const dayNum = parseInt(r.days);
+          return new Date().getDate() === dayNum;
+        }
+        return !r.freq; // Routinen ohne freq gelten als täglich (unsere lokale Erstellung)
+      })();
+      if (!isTodayRoutine) return;
+      h += '<div class="cal-day-routine" data-rid="'+r.id+'" style="border-left:4px solid '+(r.done_today?'#059669':'#e5e7eb')+';background:#fff;border-radius:6px;padding:10px 12px;cursor:pointer;display:flex;align-items:center;gap:10px;box-shadow:0 1px 2px rgba(0,0,0,.06)">'
+        + '<div style="width:24px;height:24px;border-radius:50%;background:'+(r.done_today?'#059669':'#e5e7eb')+';color:'+(r.done_today?'#fff':'#999')+';display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0">'+(r.done_today?'✓':'')+'</div>'
+        + '<div style="font-size:12px;color:'+(r.done_today?'#999':'#1a1a2e')+';'+(r.done_today?'text-decoration:line-through':'')+'">'+escHtml(r.name)+'</div>'
+        + '</div>';
+    });
+    h += '</div>';
+  }
+  h += '</div>'; // close day container
+  wrap.innerHTML = h;
+  // Attach click handlers
+  wrap.querySelectorAll('.cal-day-card').forEach(el => {
+    el.addEventListener('click', function() { editTask(this.dataset.id); });
+  });
+  wrap.querySelectorAll('.cal-day-routine').forEach(el => {
+    el.addEventListener('click', function() { toggleRoutine(parseInt(this.dataset.rid)); });
+  });
+}
+
+function renderCalMonth(wrap) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + calOffset;
+  const first = new Date(year, month, 1);
+  const last = new Date(year, month + 1, 0);
+  const startDay = first.getDay(); // 0=Sun
+  const daysInMonth = last.getDate();
+  const monthLabel = first.toLocaleDateString('de-DE', {month:'long', year:'numeric'});
+  document.getElementById('calLabel').textContent = monthLabel;
+  const dayLabels = ['Mo','Di','Mi','Do','Fr','Sa','So'];
+  let h = '<table style="width:100%;border-collapse:collapse;table-layout:fixed"><thead><tr>';
+  dayLabels.forEach(d => h += '<th style="padding:6px;font-size:11px;text-align:center;color:#666">'+d+'</th>');
+  h += '</tr></thead><tbody>';
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
+  const tNow = Math.floor(Date.now()/1000);
+  let day = 1;
+  for (let row = 0; row < 6; row++) {
+    if (day > daysInMonth) break;
+    h += '<tr>';
+    for (let col = 0; col < 7; col++) {
+      const cellDay = row === 0 && col < ((startDay+6)%7) ? 0 : day++;
+      const d = cellDay ? new Date(year, month, cellDay) : null;
+      const isT = d && d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()===now.getDate();
+      h += '<td style="vertical-align:top;padding:2px;border:1px solid #e5e7eb;height:80px;width:14.28%;'+(isT?'background:#f0f4ff':'')+'">';
+      if (d) {
+        h += '<div style="font-size:10px;font-weight:600;color:'+(isT?'#002D69':'#333')+';padding:1px 2px;margin-bottom:2px">'+cellDay+'</div>';
+        const dayStart = Math.floor(d.getTime()/1000);
+        const dayEnd = dayStart + 86400;
+        const tasks = calDated.filter(t => {
+          const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+          return s && s < dayEnd && e >= dayStart;
+        }).slice(0, 3);
+        tasks.forEach(t => {
+          const p = PRIO_LABEL(t.priority);
+          h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:2px;padding:1px 2px;margin-bottom:1px;font-size:8px;cursor:pointer;overflow:hidden;white-space:nowrap;'+(t.status==='completed'?'opacity:0.5;text-decoration:line-through':'')+'" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title).substring(0,15)+'</div>';
+        });
+        if (tasks.length > 3) h += '<div style="font-size:8px;color:#999">+'+ (calDated.filter(t => {
+          const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+          return s && s < dayEnd && e >= dayStart;
+        }).length - 3) +' mehr</div>';
+      }
+      h += '</td>';
+    }
+    h += '</tr>';
+  }
+  h += '</tbody></table>';
+  wrap.innerHTML = h;
+}
+
+function renderCalYear(wrap) {
+  const now = new Date();
+  const year = now.getFullYear() + calOffset;
+  document.getElementById('calLabel').textContent = 'Jahr ' + year;
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
+  let h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
+  for (let m = 0; m < 12; m++) {
+    const first = new Date(year, m, 1);
+    const lastD = new Date(year, m + 1, 0).getDate();
+    const mName = first.toLocaleDateString('de-DE', {month:'short'});
+    const monthStart = Math.floor(first.getTime()/1000);
+    const monthEnd = monthStart + lastD * 86400;
+    const tasks = calDated.filter(t => {
+      const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+      return s && s < monthEnd && e >= monthStart;
+    });
+    const byPrio = {hoch:0,mittel:0,niedrig:0};
+    tasks.forEach(t => { const p=PRIO_LABEL(t.priority); byPrio[p]=(byPrio[p]||0)+1; });
+    h += '<div style="background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+      + '<div style="font-size:13px;font-weight:600;color:#002D69;margin-bottom:6px">'+mName+'</div>'
+      + '<div style="font-size:11px;color:#666">'+tasks.length+' Aufgaben</div>';
+    Object.entries(byPrio).forEach(([p,c]) => {
+      if (c) h += '<div style="font-size:10px;color:'+(colors[p]||'#999')+'">'+p+': '+c+'</div>';
+    });
+    h += '</div>';
+  }
+  h += '</div>';
+  wrap.innerHTML = h;
+}
+
+// ── Tabs ──
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  const tab = document.querySelector(`.tab[onclick*="'${name}'"]`);
+  if (tab) tab.classList.add('active');
+  const panel = document.getElementById('panel-' + name);
+  if (panel) panel.classList.add('active');
+  if (name === 'gantt') renderGantt();
+  if (name === 'overview') renderOverview();
+  if (name === 'calendar') renderCalendar();
+}
+
+// Restore title when timer done
+setInterval(() => {
+  if (pomoState === 'idle' || pomoState === 'paused') {
+    document.title = 'Projekte · Paul Dubrownik';
+  }
+}, 5000);
+
+// ── Init ──
+updateConnBadge();
+loadTasks();
+</script>
+</body>
+</html>

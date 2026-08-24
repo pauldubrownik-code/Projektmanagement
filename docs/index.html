@@ -491,9 +491,18 @@ function openSettings() {
   document.getElementById('modalOverlay').classList.add('show');
 }
 
+// Entfernt neben Leerzeichen an den Enden auch unsichtbare Zeichen, die
+// beim Kopieren auf dem Handy (z.B. über Notizen/Messenger-Apps oder
+// Passwort-Manager) gerne mit reinrutschen und den Token unbrauchbar
+// machen, ohne dass man es sieht — daher "Bad credentials" trotz
+// scheinbar gleichem Token.
+function cleanSecret(s) {
+  return String(s || '').replace(/[\s​‌‍﻿]/g, '');
+}
+
 async function saveSettings() {
-  const tok = document.getElementById('sTok').value.trim();
-  const gid = document.getElementById('sGist').value.trim();
+  const tok = cleanSecret(document.getElementById('sTok').value);
+  const gid = cleanSecret(document.getElementById('sGist').value);
   const statusEl = document.getElementById('sStatus');
   if (!tok) { alert('Bitte ein Token eingeben.'); return; }
   Store.token = tok;

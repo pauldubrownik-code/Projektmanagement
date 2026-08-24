@@ -480,7 +480,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Projekte · Christian Radden</title>
+<title>Projekte · Paul Dubrownik</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f6f8;color:#1a1a2e;padding:20px}
@@ -589,7 +589,7 @@ h1 span{color:#007FA7;font-weight:400}
 </style>
 </head>
 <body>
-<h1>Projekte <span>· Christian Radden</span></h1>
+<h1>Projekte <span>· Paul Dubrownik</span></h1>
 <div class="sub" id="statusLine">Lade Daten …</div>
 
 <div class="tabs">
@@ -1637,7 +1637,7 @@ function switchTab(name) {
 // Restore title when timer done
 setInterval(() => {
   if (pomoState === 'idle' || pomoState === 'paused') {
-    document.title = 'Projekte · Christian Radden';
+    document.title = 'Projekte · Paul Dubrownik';
   }
 }, 5000);
 

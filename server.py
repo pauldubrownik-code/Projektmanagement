@@ -1,0 +1,1660 @@
+#!/usr/bin/env python3
+"""Interaktives Kanban + Gantt + Routinen + Pomodoro — API-Server + Frontend.
+
+Fertige Version (aus chradden/Projektmanagement), für Render angepasst.
+Start:  python3 server.py
+Dann:   http://localhost:8089
+
+Render-Anpassungen:
+- PORT aus Umgebungsvariable (Render injectiert $PORT)
+- HOST = 0.0.0.0 (extern erreichbar)
+- KANBAN_DB aus env, Standard: ./data/kanban.db (writable, kein HOME-Zwang)
+- Vollständiges DB-Schema (tasks, routines, routine_logs) wird selbst angelegt
+- Optionaler Basic-Auth über KANBAN_USER / KANBAN_PASS (empfohlen für Render)
+"""
+
+import json
+import os
+import sqlite3
+import uuid
+import time
+import base64
+from datetime import datetime
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from pathlib import Path
+
+BASE = Path(__file__).parent.resolve()
+# Render: DB in writable Verzeichnis (env-überschreibbar, z.B. /data/kanban/data/kanban.db)
+KANBAN_DB = Path(os.environ.get("KANBAN_DB", BASE / "data" / "kanban.db"))
+PORT = int(os.environ.get("PORT", 8089))
+HOST = os.environ.get("HOST", "0.0.0.0")
+
+# ── Optionaler Passwortschutz (auf Render Pflicht, da öffentlich) ──
+AUTH_USER = os.environ.get("KANBAN_USER", "")
+AUTH_PASS = os.environ.get("KANBAN_PASS", "")
+AUTH_REALM = "Projektmanagement"
+
+PRIO_LABELS = {1: "hoch", 2: "mittel", 3: "niedrig"}
+PRIO_VALUES = {"hoch": 1, "mittel": 2, "niedrig": 3}
+STATUS_ORDER = ["backlog", "ready", "running", "completed", "blocked"]
+
+# Die DB wird auch vom Hermes-Agenten beschrieben; dessen Statuswerte
+# müssen auf die fünf Board-Spalten abgebildet werden, sonst fallen die
+# Karten im Frontend aus allen Spalten heraus.
+STATUS_ALIASES = {
+    "todo": "backlog", "open": "backlog", "new": "backlog",
+    "queued": "ready", "pending": "ready",
+    "in_progress": "running", "doing": "running", "active": "running", "started": "running",
+    "done": "completed", "finished": "completed", "closed": "completed",
+    "waiting": "blocked", "on_hold": "blocked", "paused": "blocked",
+}
+
+
+def normalize_status(raw):
+    s = str(raw or "").strip().lower()
+    if s in STATUS_ORDER:
+        return s
+    return STATUS_ALIASES.get(s, raw)
+
+
+def get_db():
+    KANBAN_DB.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(KANBAN_DB))
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    return con
+
+
+def ensure_tables():
+    con = get_db()
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT DEFAULT '',
+            status TEXT DEFAULT 'backlog',
+            priority INTEGER DEFAULT 2,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            assignee TEXT DEFAULT 'user',
+            project_id TEXT
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS routines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT DEFAULT 'Allgemein',
+            created_at INTEGER NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS routine_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            routine_id INTEGER NOT NULL,
+            completed_at INTEGER NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS brainstorm (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            project TEXT DEFAULT '',
+            processed INTEGER DEFAULT 0,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS task_estimates (
+            task_id TEXT PRIMARY KEY,
+            estimated_minutes INTEGER DEFAULT 0,
+            buffer_percent INTEGER DEFAULT 20,
+            notes TEXT DEFAULT ''
+        )
+    """)
+    con.commit()
+    con.close()
+
+
+ensure_tables()
+
+
+def fetch_tasks():
+    con = get_db()
+    rows = con.execute(
+        "SELECT id, title, body, status, priority, created_at, started_at, "
+        "completed_at, assignee, project_id FROM tasks ORDER BY priority, created_at"
+    ).fetchall()
+    tasks = [dict(r) for r in rows]
+    for t in tasks:
+        t["status"] = normalize_status(t["status"])
+    # Add estimates
+    est_rows = con.execute("SELECT * FROM task_estimates").fetchall()
+    estimates = {r["task_id"]: dict(r) for r in est_rows}
+    con.close()
+    for t in tasks:
+        e = estimates.get(t["id"], {})
+        t["estimated_minutes"] = e.get("estimated_minutes", 0)
+        t["buffer_percent"] = e.get("buffer_percent", 20)
+    return tasks
+
+
+def fetch_routines():
+    con = get_db()
+    rows = con.execute("SELECT * FROM routines ORDER BY category, name").fetchall()
+    routines = [dict(r) for r in rows]
+    # Add today's completion status and streak
+    today_start = int(__import__("time").time()) - 86400  # last 24h
+    for r in routines:
+        log = con.execute(
+            "SELECT COUNT(*) as cnt, MAX(completed_at) as last FROM routine_logs WHERE routine_id=? AND completed_at>?",
+            (r["id"], today_start)
+        ).fetchone()
+        r["done_today"] = log["cnt"] > 0
+        r["last_done"] = log["last"]
+        # Streak: count consecutive days with logs
+        streak = 0
+        logs = con.execute(
+            "SELECT completed_at FROM routine_logs WHERE routine_id=? ORDER BY completed_at DESC LIMIT 365",
+            (r["id"],)
+        ).fetchall()
+        if logs:
+            from datetime import datetime, timedelta
+            # Just return last_completed for now
+            pass
+    con.close()
+    return routines
+
+
+def fetch_routine_log(routine_id):
+    con = get_db()
+    rows = con.execute(
+        "SELECT * FROM routine_logs WHERE routine_id=? ORDER BY completed_at DESC LIMIT 30",
+        (routine_id,)
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def fetch_brainstorms():
+    con = get_db()
+    rows = con.execute(
+        "SELECT id, content, project, processed, created_at FROM brainstorm ORDER BY created_at DESC"
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def ts_to_date(ts):
+    if not ts:
+        return ""
+    try:
+        return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+    except (ValueError, OSError):
+        return ""
+
+
+def date_to_ts(date_str):
+    if not date_str or not date_str.strip():
+        return None
+    try:
+        return int(datetime.strptime(date_str.strip(), "%Y-%m-%d").timestamp())
+    except ValueError:
+        return None
+
+
+class KanbanHandler(SimpleHTTPRequestHandler):
+
+    def require_auth(self):
+        """Erzwingt Basic Auth, falls AUTH_USER/AUTH_PASS gesetzt sind."""
+        if not AUTH_USER and not AUTH_PASS:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth[6:]).decode("utf-8")
+                user, _, pw = decoded.partition(":")
+                if user == AUTH_USER and pw == AUTH_PASS:
+                    return True
+            except Exception:
+                pass
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", f'Basic realm="{AUTH_REALM}"')
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"<h1>401 Unauthorized</h1><p>Zugriff nur mit g&uuml;ltigen Anmeldedaten.</p>")
+        return False
+
+    def do_GET(self):
+        if not self.require_auth():
+            return
+        path = self.path.rstrip("/")
+        if path == "/":
+            self.send_html(INDEX_HTML)
+        elif path == "/api/tasks":
+            self.send_json({"tasks": fetch_tasks()})
+        elif path == "/api/routines":
+            self.send_json({"routines": fetch_routines()})
+        elif path.startswith("/api/routines/") and path.endswith("/log"):
+            rid = path.split("/api/routines/")[1].split("/log")[0]
+            self.send_json({"log": fetch_routine_log(rid)})
+        elif path == "/api/brainstorm":
+            self.send_json({"entries": fetch_brainstorms()})
+        elif path.startswith("/api/tasks/"):
+            task_id = path.split("/api/tasks/")[1].split("/")[0]
+            if task_id:
+                con = get_db()
+                row = con.execute(
+                    "SELECT id, title, body, status, priority, created_at, started_at, "
+                    "completed_at, assignee, project_id FROM tasks WHERE id=?", (task_id,)
+                ).fetchone()
+                con.close()
+                t = dict(row) if row else {"error": "not found"}
+                if row:
+                    con = get_db()
+                    est = con.execute("SELECT * FROM task_estimates WHERE task_id=?", (task_id,)).fetchone()
+                    con.close()
+                    t["estimated_minutes"] = est["estimated_minutes"] if est else 0
+                    t["buffer_percent"] = est["buffer_percent"] if est else 20
+                self.send_json(t, 200 if row else 404)
+            else:
+                self.send_json({"error": "missing id"}, 400)
+        else:
+            self.send_html(INDEX_HTML)
+
+    def do_POST(self):
+        if not self.require_auth():
+            return
+        body = self._read_body()
+        path = self.path.rstrip("/")
+
+        if path == "/api/tasks":
+            title = body.get("title", "Neue Aufgabe").strip() or "Neue Aufgabe"
+            prio = PRIO_VALUES.get(body.get("priority", "mittel"), 2)
+            desc = body.get("body", "").strip()
+            status = body.get("status", "ready")
+            if status not in STATUS_ORDER:
+                status = "ready"
+            start_ts = date_to_ts(body.get("start_date"))
+            due_ts = date_to_ts(body.get("due_date"))
+            est_min = int(body.get("estimated_minutes", 0))
+            buf_pct = int(body.get("buffer_percent", 20))
+
+            task_id = f"t_{uuid.uuid4().hex[:8]}"
+            now = int(time.time())
+            project = body.get("project", "").strip()
+            con = get_db()
+            con.execute(
+                "INSERT INTO tasks (id, title, body, status, priority, created_at, assignee, started_at, completed_at, project_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, title, desc, status, prio, now, "user", start_ts or None, due_ts or None, project or None),
+            )
+            con.execute(
+                "INSERT OR REPLACE INTO task_estimates (task_id, estimated_minutes, buffer_percent) VALUES (?, ?, ?)",
+                (task_id, est_min, buf_pct),
+            )
+            con.commit()
+            con.close()
+            self.send_json({"ok": True, "id": task_id})
+
+        elif path == "/api/brainstorm":
+            content = body.get("content", "").strip()
+            project = body.get("project", "").strip()
+            if not content:
+                self.send_json({"error": "empty content"}, 400)
+                return
+            now = int(time.time())
+            con = get_db()
+            con.execute("INSERT INTO brainstorm (content, project, processed, created_at) VALUES (?, ?, 0, ?)",
+                        (content, project, now))
+            con.commit()
+            con.close()
+            self.send_json({"ok": True})
+
+        elif path.startswith("/api/routines/") and path.endswith("/toggle"):
+            rid = int(path.split("/api/routines/")[1].split("/toggle")[0])
+            now = int(time.time())
+            con = get_db()
+            log = con.execute(
+                "SELECT COUNT(*) as cnt FROM routine_logs WHERE routine_id=? AND completed_at>?",
+                (rid, now - 86400)
+            ).fetchone()
+            if log["cnt"] > 0:
+                # Undo: remove today's entry
+                con.execute("DELETE FROM routine_logs WHERE routine_id=? AND completed_at>?", (rid, now - 86400))
+            else:
+                con.execute("INSERT INTO routine_logs (routine_id, completed_at) VALUES (?, ?)", (rid, now))
+            con.commit()
+            con.close()
+            self.send_json({"ok": True})
+
+        elif path.startswith("/api/tasks/") and path.endswith("/status"):
+            task_id = path.split("/api/tasks/")[1].split("/status")[0]
+            new_status = body.get("status", "")
+            if new_status not in STATUS_ORDER:
+                self.send_json({"error": f"invalid status: {new_status}"}, 400)
+                return
+            now = int(time.time())
+            con = get_db()
+            if new_status == "running":
+                con.execute("UPDATE tasks SET status=?, started_at=COALESCE(started_at,?) WHERE id=?", (new_status, now, task_id))
+            elif new_status == "completed":
+                con.execute("UPDATE tasks SET status=?, completed_at=COALESCE(completed_at,?) WHERE id=?", (new_status, now, task_id))
+            else:
+                con.execute("UPDATE tasks SET status=? WHERE id=?", (new_status, task_id))
+            con.commit()
+            con.close()
+            self.send_json({"ok": True})
+        else:
+            self.send_json({"error": "not found"}, 404)
+
+    def do_PUT(self):
+        body = self._read_body()
+        path = self.path.rstrip("/")
+
+        if path.startswith("/api/tasks/"):
+            task_id = path.split("/api/tasks/")[1].split("/")[0]
+            if not task_id:
+                self.send_json({"error": "missing id"}, 400)
+                return
+
+            updates = []
+            params = []
+
+            title = body.get("title", "").strip()
+            desc = body.get("body", "").strip()
+            prio_str = body.get("priority", "")
+            start_str = body.get("start_date", "")
+            due_str = body.get("due_date", "")
+            project = body.get("project", "")
+            est_min = body.get("estimated_minutes")
+            buf_pct = body.get("buffer_percent")
+
+            if title:
+                updates.append("title=?")
+                params.append(title)
+            if body.get("body") is not None:
+                updates.append("body=?")
+                params.append(desc)
+            if prio_str:
+                prio = PRIO_VALUES.get(prio_str)
+                if prio:
+                    updates.append("priority=?")
+                    params.append(prio)
+            if body.get("start_date") is not None:
+                start_ts = date_to_ts(start_str)
+                updates.append("started_at=?")
+                params.append(start_ts)
+            if body.get("due_date") is not None:
+                due_ts = date_to_ts(due_str)
+                updates.append("completed_at=?")
+                params.append(due_ts)
+            if body.get("project") is not None:
+                updates.append("project_id=?")
+                params.append(project.strip() or None)
+
+            if updates:
+                params.append(task_id)
+                con = get_db()
+                con.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id=?", params)
+                con.commit()
+                con.close()
+
+            # Update estimates
+            if est_min is not None or buf_pct is not None:
+                con = get_db()
+                current = con.execute("SELECT * FROM task_estimates WHERE task_id=?", (task_id,)).fetchone()
+                if current:
+                    e_min = est_min if est_min is not None else current["estimated_minutes"]
+                    b_pct = buf_pct if buf_pct is not None else current["buffer_percent"]
+                    con.execute("UPDATE task_estimates SET estimated_minutes=?, buffer_percent=? WHERE task_id=?",
+                                (e_min, b_pct, task_id))
+                else:
+                    con.execute("INSERT INTO task_estimates (task_id, estimated_minutes, buffer_percent) VALUES (?, ?, ?)",
+                                (task_id, est_min or 0, buf_pct or 20))
+                con.commit()
+                con.close()
+
+            self.send_json({"ok": True})
+        else:
+            self.send_json({"error": "not found"}, 404)
+
+    def do_DELETE(self):
+        path = self.path.rstrip("/")
+        if path.startswith("/api/tasks/"):
+            task_id = path.split("/api/tasks/")[1].split("/")[0]
+            if not task_id:
+                self.send_json({"error": "missing id"}, 400)
+                return
+            con = get_db()
+            con.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+            con.execute("DELETE FROM task_estimates WHERE task_id=?", (task_id,))
+            con.commit()
+            con.close()
+            self.send_json({"ok": True})
+        elif path.startswith("/api/brainstorm/"):
+            entry_id = path.split("/api/brainstorm/")[1].split("/")[0]
+            con = get_db()
+            con.execute("DELETE FROM brainstorm WHERE id=?", (entry_id,))
+            con.commit()
+            con.close()
+            self.send_json({"ok": True})
+        else:
+            self.send_json({"error": "not found"}, 404)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length).decode() if length else "{}"
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+
+    def send_json(self, data, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False, default=str).encode())
+
+    def send_html(self, html, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
+
+    def log_message(self, format, *args):
+        pass
+
+
+INDEX_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Projekte · Christian Radden</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f6f8;color:#1a1a2e;padding:20px}
+h1{font-size:22px;color:#002D69;margin-bottom:4px}
+h1 span{color:#007FA7;font-weight:400}
+.sub{font-size:13px;color:#888;margin-bottom:16px}
+.tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:2px solid #e5e7eb}
+.tab{padding:10px 20px;cursor:pointer;font-size:14px;font-weight:600;background:transparent;color:#888;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;transition:.2s}
+.tab:hover{color:#002D69}
+.tab.active{color:#002D69;border-bottom-color:#002D69}
+.panel{display:none}
+.panel.active{display:block}
+.toolbar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+.btn{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:.2s;display:inline-flex;align-items:center;gap:4px;font-family:inherit}
+.btn-primary{background:#002D69;color:#fff}
+.btn-primary:hover{background:#003d8f}
+.btn-sm{padding:4px 10px;font-size:12px}
+.btn-danger{background:#DC2626;color:#fff}
+.btn-danger:hover{background:#B91C1C}
+.btn-ghost{background:transparent;color:#666}
+.btn-ghost:hover{background:#e5e7eb;color:#333}
+.btn-success{background:#059669;color:#fff}
+.btn-success:hover{background:#047857}
+.btn-pomo{background:#7C3AED;color:#fff}
+.btn-pomo:hover{background:#6D28D9}
+
+/* Kanban */
+.kanban{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;min-height:60vh}
+.column{background:#e5e7eb;border-radius:10px;padding:10px;min-height:200px;display:flex;flex-direction:column}
+.col-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #ddd;font-size:12px;color:#666}
+.col-header h3{font-size:13px;font-weight:600}
+.col-count{background:#002D69;color:#fff;font-size:10px;border-radius:10px;padding:1px 7px;font-weight:600}
+.col-body{flex:1;min-height:100px}
+.card{background:#fff;border-radius:8px;padding:12px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.08);cursor:pointer;transition:.2s;border-left:4px solid #999;position:relative}
+.card:hover{box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.card.prio-hoch{border-left-color:#DD3221}
+.card.prio-mittel{border-left-color:#f59e0b}
+.card.prio-niedrig{border-left-color:#6b7280}
+.card-title{font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:2px;padding-right:50px}
+.card-body{font-size:11px;color:#666;line-height:1.3;margin-top:4px}
+.card-meta{font-size:10px;color:#999;margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
+.card-dates{font-size:9px;color:#aaa;margin-top:4px;display:flex;gap:6px}
+.card-est{font-size:9px;color:#7C3AED;margin-top:2px;font-weight:500}
+.card-actions{position:absolute;top:6px;right:6px;display:flex;gap:2px}
+.card-actions button{background:none;border:none;cursor:pointer;font-size:14px;color:#999;padding:2px 4px;border-radius:4px;transition:.2s}
+.card-actions button:hover{background:#f0f0f0;color:#333}
+.status-select{font-size:10px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;color:#555}
+
+/* Modal */
+.modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center;padding:20px}
+.modal-overlay.show{display:flex}
+.modal{background:#fff;border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,.2);animation:fadeIn .2s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.modal-close{float:right;font-size:22px;cursor:pointer;color:#999;line-height:1}
+.modal-close:hover{color:#333}
+.modal h2{color:#002D69;font-size:18px;margin-bottom:16px;padding-right:30px}
+.modal label{display:block;font-size:12px;font-weight:600;color:#666;margin-bottom:4px;margin-top:12px}
+.modal input[type=text],.modal input[type=date],.modal input[type=number],.modal textarea,.modal select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit}
+.modal textarea{min-height:80px;resize:vertical}
+.modal .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.modal .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.modal .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+
+/* Gantt */
+.gantt{overflow-x:auto;background:#fff;border-radius:10px;padding:16px}
+.gantt-table{width:100%;border-collapse:collapse;font-size:13px;min-width:750px}
+.gantt-table th{background:#002D69;color:#fff;padding:8px 12px;text-align:left;font-size:12px;position:sticky;top:0}
+.gantt-table td{padding:8px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
+.gantt-date{font-size:10px;color:#999;white-space:nowrap}
+.gantt-timeline{position:relative;margin-top:16px;padding-top:12px;border-top:1px solid #e5e7eb}
+.gantt-timeline .tl-label{font-size:11px;font-weight:600;color:#666;margin-bottom:6px}
+.timeline-row{display:flex;align-items:center;margin-bottom:4px;position:relative}
+.timeline-label{width:140px;font-size:12px;font-weight:500;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:8px;flex-shrink:0}
+.timeline-track{flex:1;height:24px;background:#f0f0f0;border-radius:4px;position:relative;overflow:hidden}
+.timeline-fill{position:absolute;top:0;left:0;height:100%;border-radius:4px;min-width:4px;transition:width .5s}
+.timeline-text{position:absolute;top:0;left:4px;height:100%;display:flex;align-items:center;font-size:10px;color:#fff;font-weight:600;white-space:nowrap}
+
+/* Misc */
+
+/* Pomodoro */
+.pomo-fab{position:fixed;bottom:24px;right:24px;width:56px;height:56px;border-radius:50%;background:#7C3AED;color:#fff;border:none;cursor:pointer;font-size:24px;box-shadow:0 4px 16px rgba(124,58,237,.4);z-index:900;transition:.2s}
+.pomo-fab:hover{transform:scale(1.1);background:#6D28D9}
+.pomo-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.85);z-index:9998;justify-content:center;align-items:center;flex-direction:column}
+.pomo-overlay.show{display:flex}
+.pomo-card{background:#fff;border-radius:20px;padding:40px;text-align:center;max-width:360px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.pomo-card .phase{font-size:14px;font-weight:600;color:#7C3AED;margin-bottom:8px}
+.pomo-card .timer{font-size:72px;font-weight:700;color:#1a1a2e;font-variant-numeric:tabular-nums;margin:16px 0}
+.pomo-card .timer.pause{color:#f59e0b}
+.pomo-card .timer.break{color:#059669}
+.pomo-card .pomo-btn-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.pomo-card .pomo-btn-row button{min-width:80px}
+.pomo-card .task-label{font-size:12px;color:#888;margin-top:12px;padding:8px;background:#f4f6f8;border-radius:8px}
+.pomo-card .close-pomo{position:absolute;top:12px;right:12px;font-size:24px;cursor:pointer;color:#999;background:none;border:none}
+.pomo-card-wrap{position:relative}
+.pomo-count{font-size:11px;color:#aaa;margin-top:8px}
+
+/* Misc */
+.empty-state{padding:40px 20px;text-align:center;color:#aaa;font-size:14px}
+.loading{text-align:center;padding:40px;color:#888;font-size:14px}
+.spinner{display:inline-block;width:20px;height:20px;border:3px solid #e5e7eb;border-top-color:#002D69;border-radius:50%;animation:spin .6s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+@media(max-width:1000px){.kanban{grid-template-columns:repeat(3,1fr)}.brainstorm-panel{grid-template-columns:1fr}}
+@media(max-width:700px){.kanban{grid-template-columns:repeat(2,1fr)}.timeline-label{width:100px;font-size:11px}}
+@media(max-width:500px){.kanban{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<h1>Projekte <span>· Christian Radden</span></h1>
+<div class="sub" id="statusLine">Lade Daten …</div>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('overview')">📊 Übersicht</button>
+  <button class="tab" onclick="switchTab('kanban')">📋 Kanban</button>
+  <button class="tab" onclick="switchTab('calendar')">📅 Kalender</button>
+  <button class="tab" onclick="switchTab('gantt')">📊 Gantt</button>
+</div>
+
+<div id="panel-kanban" class="panel">
+  <div class="toolbar">
+    <button class="btn btn-primary" onclick="openCreateModal()">+ Neue Karte</button>
+    <select id="projectFilter" onchange="renderKanban()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="">📁 Alle Projekte</option>
+    </select>
+    <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
+  </div>
+  <div id="kanban" class="kanban"><div class="loading"><span class="spinner"></span>Lade …</div></div>
+</div>
+
+<div id="panel-gantt" class="panel">
+  <div class="toolbar">
+    <select id="ganttProjectFilter" onchange="renderGantt()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="">📁 Alle Projekte</option>
+    </select>
+    <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
+  </div>
+  <div id="ganttWrap" class="gantt"><div class="loading"><span class="spinner"></span>Lade …</div></div>
+</div>
+
+<div id="panel-overview" class="panel active">
+  <div class="toolbar">
+    <button class="btn btn-ghost" onclick="loadTasks()">🔄 Aktualisieren</button>
+  </div>
+  <div id="overviewWrap"><div class="loading"><span class="spinner"></span>Lade …</div></div>
+  <div id="routinesOverview"></div>
+</div>
+
+<div id="panel-calendar" class="panel">
+  <div class="toolbar">
+    <button class="btn btn-ghost" onclick="calNav(-1)">◀</button>
+    <span id="calLabel" style="font-size:14px;font-weight:600;color:#002D69;min-width:240px;text-align:center"></span>
+    <button class="btn btn-ghost" onclick="calNav(1)">▶</button>
+    <button class="btn btn-ghost" onclick="calToday()">Heute</button>
+    <select id="calProjectFilter" onchange="renderCalendar()" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="">📁 Alle Projekte</option>
+    </select>
+    <button class="btn btn-ghost" onclick="loadTasks()">🔄</button>
+    <span style="flex:1"></span>
+    <button class="btn btn-sm cal-vw" data-vw="week" onclick="calSetView('week')" style="background:#002D69;color:#fff">Woche</button>
+    <button class="btn btn-sm cal-vw" data-vw="day" onclick="calSetView('day')">Tag</button>
+    <button class="btn btn-sm cal-vw" data-vw="month" onclick="calSetView('month')">Monat</button>
+    <button class="btn btn-sm cal-vw" data-vw="year" onclick="calSetView('year')">Jahr</button>
+  </div>
+  <div id="calendarWrap" style="background:#fff;border-radius:10px;padding:16px;overflow-x:auto">
+    <div class="loading"><span class="spinner"></span>Lade …</div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modalContent">
+    <span class="modal-close" onclick="closeModal()">&times;</span>
+    <h2 id="modalTitle">Aufgabe</h2>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<!-- Pomodoro FAB -->
+<button class="pomo-fab" id="pomoFab" onclick="togglePomo()" title="Fokus-Modus (Pomodoro)">🍅</button>
+
+<!-- Pomodoro Overlay -->
+<div class="pomo-overlay" id="pomoOverlay">
+  <div class="pomo-card-wrap">
+    <div class="pomo-card">
+      <button class="close-pomo" onclick="togglePomo()">&times;</button>
+      <div class="phase" id="pomoPhase">🍅 Fokus</div>
+      <div class="timer" id="pomoTimer">25:00</div>
+      <div class="pomo-btn-row">
+        <button class="btn btn-pomo" id="pomoBtn" onclick="pomoStart()">▶ Start</button>
+        <button class="btn btn-ghost" onclick="pomoReset()">↺ Reset</button>
+      </div>
+      <div class="task-label" id="pomoTask">Keine Aufgabe ausgewählt</div>
+      <div class="pomo-count" id="pomoCount">🍅 0 Today</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──
+let allTasks = [];
+
+// ── Pomodoro State ──
+let pomoState = 'idle'; // idle | running | paused | break
+let pomoRemaining = 25 * 60;
+let pomoInterval = null;
+let pomoCountToday = parseInt(localStorage.getItem('pomoCount') || '0');
+let pomoDate = localStorage.getItem('pomoDate') || '';
+
+// Check date reset
+const today = new Date().toDateString();
+if (pomoDate !== today) {
+  pomoCountToday = 0;
+  localStorage.setItem('pomoDate', today);
+}
+localStorage.setItem('pomoCount', pomoCountToday);
+
+// ── API ──
+async function api(path, opts={}) {
+  const res = await fetch(path, {
+    headers: {'Content-Type':'application/json', ...opts.headers},
+    ...opts
+  });
+  return res.json();
+}
+
+// ── Load ──
+async function loadTasks() {
+  document.getElementById('statusLine').textContent = 'Lade …';
+  try {
+    const [td, rd] = await Promise.all([
+      api('/api/tasks'),
+      api('/api/routines')
+    ]);
+    allTasks = td.tasks || [];
+    routines = rd.routines || [];
+    document.getElementById('statusLine').textContent =
+      allTasks.length + ' Aufgaben · ' + new Date().toLocaleTimeString('de-DE');
+
+    // Update project filters
+    const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
+    const opts = projs.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
+    const filterSel = document.getElementById('projectFilter');
+    const currentVal = filterSel.value;
+    filterSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
+    filterSel.value = currentVal;
+    const ganttSel = document.getElementById('ganttProjectFilter');
+    const ganttVal = ganttSel.value;
+    ganttSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
+    ganttSel.value = ganttVal;
+    const calSel = document.getElementById('calProjectFilter');
+    const calVal = calSel.value;
+    calSel.innerHTML = '<option value="">📁 Alle Projekte</option>' + opts;
+    calSel.value = calVal;
+
+    renderKanban();
+    renderGantt();
+    renderOverview();
+    renderCalendar();
+  } catch(e) {
+    document.getElementById('statusLine').textContent = '⚠️ Fehler beim Laden';
+    console.error(e);
+  }
+}
+
+// ── Helpers ──
+function PRIO_LABEL(p) {
+  if (typeof p === 'number') return {1:'hoch',2:'mittel',3:'niedrig'}[p]||'mittel';
+  if (['hoch','mittel','niedrig'].includes(p)) return p;
+  return 'mittel';
+}
+// Escapt auch Anführungszeichen, damit Werte in HTML-Attributen
+// (z.B. Projektfilter-Optionen) nicht abgeschnitten werden.
+function escHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function tsToDate(ts) {
+  if (!ts) return '';
+  try { return new Date(ts * 1000).toLocaleDateString('de-DE'); } catch(e) { return ''; }
+}
+function tsToDateInput(ts) {
+  if (!ts) return '';
+  try { return new Date(ts * 1000).toISOString().split('T')[0]; } catch(e) { return ''; }
+}
+function fmtMinutes(m) {
+  if (!m || m <= 0) return '';
+  if (m >= 60) return Math.floor(m/60)+'h '+ (m%60 ? m%60+'min' : '');
+  return m + 'min';
+}
+
+// ── Kanban ──
+const COLS = ['backlog','ready','running','completed','blocked'];
+const COL_NAMES = {'backlog':'📋 Backlog','ready':'🟡 Bereit','running':'🟢 In Arbeit','completed':'✅ Erledigt','blocked':'🔴 Blockiert'};
+const COL_NAMES_SHORT = {'backlog':'Backlog','ready':'Bereit','running':'In Arbeit','completed':'Erledigt','blocked':'Blockiert'};
+const PRIO_C = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+
+// Karten mit unbekanntem Status (z.B. von externen Writern in der DB)
+// dürfen nicht aus dem Board verschwinden — sie landen im Backlog.
+function kanbanCol(t) {
+  return COLS.includes(t.status) ? t.status : 'backlog';
+}
+
+function renderKanban() {
+  const filter = document.getElementById('projectFilter').value;
+  const kanban = document.getElementById('kanban');
+  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
+  kanban.innerHTML = COLS.map(col => {
+    const items = filtered.filter(t => kanbanCol(t) === col);
+    return `<div class="column">
+      <div class="col-header">
+        <h3>${COL_NAMES[col]}</h3>
+        <span class="col-count">${items.length}</span>
+      </div>
+      <div class="col-body" data-col="${col}">
+        ${items.length ? items.map(t => renderCard(t)).join('') :
+          '<div class="empty-state">— leer —</div>'}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderCard(t) {
+  const prio = PRIO_LABEL(t.priority);
+  const bodyShort = t.body ? t.body.substring(0, 80) + (t.body.length > 80 ? '…' : '') : '';
+  const startStr = tsToDate(t.started_at);
+  const dueStr = tsToDate(t.completed_at);
+  const datesHtml = (startStr || dueStr)
+    ? `<div class="card-dates">${startStr ? '📅 '+startStr : ''} ${dueStr ? '→ '+dueStr : ''}</div>`
+    : '';
+  const estHtml = t.estimated_minutes > 0
+    ? `<div class="card-est">🕐 ${fmtMinutes(t.estimated_minutes)}${t.buffer_percent ? ' +'+t.buffer_percent+'% Puffer' : ''}</div>`
+    : '';
+  const projHtml = t.project_id ? `<span style="background:#e5e7eb;border-radius:3px;padding:1px 5px;font-size:9px;color:#555">📁 ${escHtml(t.project_id)}</span>` : '';
+  return `<div class="card prio-${prio}" data-task-id="${t.id}" onclick="editTask('${t.id}')">
+    <div class="card-actions" onclick="event.stopPropagation()">
+      <button onclick="event.stopPropagation();startPomoForTask('${t.id}')" title="Fokus">🍅</button>
+      <button onclick="deleteTask('${t.id}')" title="Löschen">🗑</button>
+    </div>
+    <div class="card-title">${escHtml(t.title)}</div>
+    ${bodyShort ? `<div class="card-body">${escHtml(bodyShort)}</div>` : ''}
+    ${estHtml}
+    ${datesHtml}
+    <div class="card-meta">
+      <span style="color:${PRIO_C[prio]||'#999'};font-weight:600">${prio}</span>
+      ${projHtml}
+      <select class="status-select" autocomplete="off" onclick="event.stopPropagation()">
+        ${COLS.includes(t.status) ? '' : `<option value="" selected>⚠ ${escHtml(t.status||'—')}</option>`}
+        ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${COL_NAMES_SHORT[s]||s}</option>`).join('')}
+      </select>
+    </div>
+  </div>`;
+}
+
+// ── Status + Delete ──
+async function changeStatus(id, newStatus) {
+  if (!COLS.includes(newStatus)) return;
+  const t = allTasks.find(x => x.id === id);
+  if (t && t.status === newStatus) return;
+  try {
+    await api('/api/tasks/'+id+'/status', {method:'POST', body:JSON.stringify({status:newStatus})});
+  } finally {
+    await loadTasks();
+  }
+}
+
+// Delegierter Listener statt Inline-onchange: reagiert nur auf echte
+// Nutzer-Interaktion (isTrusted), nicht auf synthetische Events von
+// Extensions/Skripten.
+document.getElementById('kanban').addEventListener('change', (e) => {
+  if (!e.isTrusted) return;
+  const sel = e.target.closest('.status-select');
+  if (!sel) return;
+  const card = sel.closest('.card');
+  if (card && card.dataset.taskId) changeStatus(card.dataset.taskId, sel.value);
+});
+async function deleteTask(id) {
+  if (!confirm('Aufgabe löschen?')) return;
+  await api('/api/tasks/'+id, {method:'DELETE'});
+  await loadTasks();
+}
+
+// ── Create Modal ──
+function openCreateModal() {
+  document.getElementById('modalTitle').textContent = 'Neue Aufgabe';
+  document.getElementById('modalBody').innerHTML = `
+    <label>Titel *</label>
+    <input type="text" id="fTitle" placeholder="Aufgabe …" autofocus>
+    <label>Beschreibung</label>
+    <textarea id="fBody" placeholder="Details …"></textarea>
+    <div class="row2">
+      <div><label>Start</label><input type="date" id="fStart"></div>
+      <div><label>Ziel</label><input type="date" id="fDue"></div>
+    </div>
+    <div class="row3">
+      <div><label>⏱ Aufwand</label><input type="number" id="fEst" placeholder="Minuten" min="0" step="5"></div>
+      <div><label>📊 Puffer</label>
+        <select id="fBuf">
+          <option value="0">0%</option>
+          <option value="10">10%</option>
+          <option value="20" selected>20%</option>
+          <option value="30">30%</option>
+          <option value="50">50%</option>
+          <option value="100">100%</option>
+        </select>
+      </div>
+      <div><label>Priorität</label>
+        <select id="fPrio">
+          <option value="hoch">🔴 Hoch</option>
+          <option value="mittel" selected>🟡 Mittel</option>
+          <option value="niedrig">🟢 Niedrig</option>
+        </select>
+      </div>
+    </div>
+    <label>📁 Projekt</label>
+    <select id="fProject" onchange="if(this.value==='__new__'){this.style.display='none';document.getElementById('fProjectNew').style.display='block';document.getElementById('fProjectNew').focus()}">
+      <option value="">— Keins —</option>
+      <option value="__new__">➕ Neu …</option>
+    </select>
+    <input type="text" id="fProjectNew" style="display:none" placeholder="Neues Projekt …">
+    <label>Status</label>
+    <select id="fStatus">
+      <option value="backlog">📋 Backlog</option>
+      <option value="ready" selected>🟡 Bereit</option>
+      <option value="running">🟢 In Arbeit</option>
+      <option value="blocked">🔴 Blockiert</option>
+    </select>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-primary" onclick="createTask()">Erstellen</button>
+    </div>`;
+  // Populate project select
+  const projs = [...new Set(allTasks.map(t => t.project_id).filter(Boolean))].sort();
+  const projSel = document.getElementById('fProject');
+  if (projSel) {
+    const cur = projSel.value;
+    projSel.innerHTML = '<option value="">— Keins —</option>'
+      + projs.map(p => '<option value="'+escHtml(p)+'">'+escHtml(p)+'</option>').join('')
+      + '<option value="__new__">➕ Neu …</option>';
+    projSel.value = cur;
+  }
+  document.getElementById('modalOverlay').classList.add('show');
+  setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
+}
+
+async function createTask() {
+  const title = document.getElementById('fTitle').value.trim();
+  if (!title) { alert('Titel ist Pflicht!'); return; }
+  const projSel = document.getElementById('fProject');
+  const projNew = document.getElementById('fProjectNew');
+  const project = projNew.style.display !== 'none' && projNew.value.trim()
+    ? projNew.value.trim() : projSel.value;
+  await api('/api/tasks', {method:'POST', body:JSON.stringify({
+    title,
+    body: document.getElementById('fBody').value.trim(),
+    priority: document.getElementById('fPrio').value,
+    project,
+    status: document.getElementById('fStatus').value,
+    start_date: document.getElementById('fStart').value,
+    due_date: document.getElementById('fDue').value,
+    estimated_minutes: parseInt(document.getElementById('fEst').value) || 0,
+    buffer_percent: parseInt(document.getElementById('fBuf').value) || 20,
+  })});
+  closeModal();
+  await loadTasks();
+}
+
+// ── Edit Modal ──
+async function editTask(id) {
+  const t = allTasks.find(x => x.id === id);
+  if (!t) return;
+  const prio = PRIO_LABEL(t.priority);
+
+  document.getElementById('modalTitle').textContent = '✏️ Aufgabe bearbeiten';
+  document.getElementById('modalBody').innerHTML = `
+    <label>Titel</label>
+    <input type="text" id="fTitle" value="${escHtml(t.title)}">
+    <label>Beschreibung</label>
+    <textarea id="fBody">${escHtml(t.body||'')}</textarea>
+    <div class="row2">
+      <div><label>Start</label><input type="date" id="fStart" value="${tsToDateInput(t.started_at)}"></div>
+      <div><label>Ziel</label><input type="date" id="fDue" value="${tsToDateInput(t.completed_at)}"></div>
+    </div>
+    <div class="row3">
+      <div><label>⏱ Aufwand</label><input type="number" id="fEst" value="${t.estimated_minutes||0}" min="0" step="5" placeholder="Minuten"></div>
+      <div><label>📊 Puffer</label>
+        <select id="fBuf">
+          ${[0,10,20,30,50,100].map(v => `<option value="${v}" ${(t.buffer_percent||20)==v?'selected':''}>${v}%</option>`).join('')}
+        </select>
+      </div>
+      <div><label>Priorität</label>
+        <select id="fPrio">
+          <option value="hoch" ${prio==='hoch'?'selected':''}>🔴 Hoch</option>
+          <option value="mittel" ${prio==='mittel'?'selected':''}>🟡 Mittel</option>
+          <option value="niedrig" ${prio==='niedrig'?'selected':''}>🟢 Niedrig</option>
+        </select>
+      </div>
+    </div>
+    <label>📁 Projekt</label>
+    <select id="fProject" onchange="if(this.value==='__new__'){this.style.display='none';document.getElementById('fProjectNew').style.display='block';document.getElementById('fProjectNew').focus()}">
+      <option value="">— Keins —</option>
+      <option value="__new__">➕ Neu …</option>
+    </select>
+    <input type="text" id="fProjectNew" style="display:none" placeholder="Neues Projekt …">
+    <div class="row2">
+      <div><label>Status</label>
+        <select id="fStatus" autocomplete="off">
+          ${COLS.includes(t.status) ? '' : `<option value="" selected>⚠ ${escHtml(t.status||'—')}</option>`}
+          ${COLS.map(s => `<option value="${s}" ${s===t.status?'selected':''}>${COL_NAMES[s]}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:8px">
+        <button class="btn btn-pomo btn-sm" onclick="startPomoForTask('${t.id}')">🍅 Fokus</button>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-danger" onclick="deleteTask('${t.id}')">🗑 Löschen</button>
+      <button class="btn btn-primary" onclick="saveTask('${t.id}')">Speichern</button>
+    </div>`;
+  document.getElementById('fStatus').addEventListener('change', (e) => {
+    if (e.isTrusted) changeStatus(t.id, e.target.value);
+  });
+  // Populate project select and set current value
+  const projs2 = [...new Set(allTasks.map(x => x.project_id).filter(Boolean))].sort();
+  const projSel2 = document.getElementById('fProject');
+  if (projSel2) {
+    projSel2.innerHTML = '<option value="">— Keins —</option>'
+      + projs2.map(p => '<option value="'+escHtml(p)+'">'+escHtml(p)+'</option>').join('')
+      + '<option value="__new__">➕ Neu …</option>';
+    projSel2.value = t.project_id || '';
+  }
+  document.getElementById('modalOverlay').classList.add('show');
+  setTimeout(() => document.getElementById('fTitle')?.focus(), 100);
+}
+
+async function saveTask(id) {
+  const projSel = document.getElementById('fProject');
+  const projNew = document.getElementById('fProjectNew');
+  const project = projNew && projNew.style.display !== 'none' && projNew.value.trim()
+    ? projNew.value.trim() : (projSel ? projSel.value : '');
+  await api('/api/tasks/'+id, {method:'PUT', body:JSON.stringify({
+    title: document.getElementById('fTitle').value.trim(),
+    body: document.getElementById('fBody').value.trim(),
+    priority: document.getElementById('fPrio').value,
+    project,
+    start_date: document.getElementById('fStart').value,
+    due_date: document.getElementById('fDue').value,
+    estimated_minutes: parseInt(document.getElementById('fEst').value) || 0,
+    buffer_percent: parseInt(document.getElementById('fBuf').value) || 20,
+  })});
+  closeModal();
+  await loadTasks();
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('show');
+}
+
+// ── Gantt ──
+function renderGantt() {
+  const wrap = document.getElementById('ganttWrap');
+  const filter = document.getElementById('ganttProjectFilter').value;
+  if (!allTasks.length) {
+    wrap.innerHTML = '<div class="empty-state">Keine Aufgaben vorhanden</div>';
+    return;
+  }
+  const filtered = filter ? allTasks.filter(t => (t.project_id||'') === filter) : allTasks;
+  const dated = filtered.filter(t => t.started_at || t.completed_at);
+  if (!dated.length) {
+    wrap.innerHTML = '<div class="empty-state">Keine Aufgaben mit Datum. Setze Start/Ziel in den Karten.</div>';
+    return;
+  }
+  const now = Date.now() / 1000;
+  const day = 86400;
+  const sorted = [...dated].sort((a,b) => {
+    const pa = typeof a.priority === 'number' ? a.priority : ({hoch:1,mittel:2,niedrig:3}[a.priority]||2);
+    const pb = typeof b.priority === 'number' ? b.priority : ({hoch:1,mittel:2,niedrig:3}[b.priority]||2);
+    if (pa !== pb) return pa - pb;
+    return (a.created_at||0) - (b.created_at||0);
+  });
+  const tasks = sorted.map(t => {
+    const prioVal = typeof t.priority === 'number' ? t.priority : ({hoch:1,mittel:2,niedrig:3}[t.priority]||2);
+    const start = t.started_at || t.created_at || now;
+    let end = t.completed_at || now;
+    if (!t.completed_at && t.status !== 'completed') {
+      end = now + (prioVal === 1 ? 7*day : prioVal === 2 ? 14*day : 30*day);
+    }
+    return {...t, _start: start, _end: end};
+  });
+  const minT = Math.min(...tasks.map(t => t._start));
+  const maxT = Math.max(...tasks.map(t => t._end), now + 7*day);
+  const range = maxT - minT || day;
+  function pct(val) { return Math.max(2, ((val - minT) / range) * 100); }
+
+  let html = '<table class="gantt-table"><thead><tr><th>Projekt</th><th>Prio</th><th>Status</th><th>Aufwand</th><th>📁 Projekt</th><th>Start</th><th>Ziel</th></tr></thead><tbody>';
+  tasks.forEach(t => {
+    const prio = PRIO_LABEL(t.priority);
+    const estStr = t.estimated_minutes > 0 ? fmtMinutes(t.estimated_minutes) + (t.buffer_percent ? ' +'+t.buffer_percent+'%' : '') : '—';
+    html += `<tr>
+      <td><strong style="${t.status==='completed'?'text-decoration:line-through;color:#999':''}">${escHtml(t.title)}</strong></td>
+      <td><span style="color:${PRIO_C[prio]};font-weight:600">${prio}</span></td>
+      <td>${COL_NAMES[t.status]||t.status}</td>
+      <td style="color:#7C3AED;font-weight:500;font-size:12px">${estStr}</td>
+      <td style="font-size:12px">${escHtml(t.project_id||'—')}</td>
+      <td class="gantt-date">${t.started_at ? tsToDate(t.started_at) : (t.created_at ? tsToDate(t.created_at) : '—')}</td>
+      <td class="gantt-date">${t.completed_at ? tsToDate(t.completed_at) : (t.status==='completed' ? '—' : 'offen')}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+
+  html += '<div class="gantt-timeline"><div class="tl-label">📈 Zeitverlauf</div>';
+  tasks.forEach(t => {
+    const prio = PRIO_LABEL(t.priority);
+    const left = pct(t._start);
+    const width = Math.max(3, pct(t._end) - left);
+    const opacity = t.status === 'completed' ? '0.5' : '1';
+    html += `<div class="timeline-row">
+      <div class="timeline-label" title="${escHtml(t.title)}" style="${t.status==='completed'?'text-decoration:line-through;color:#999':''}">${escHtml(t.title)}</div>
+      <div class="timeline-track">
+        <div class="timeline-fill" style="left:${left}%;width:${width}%;background:${PRIO_C[prio]};opacity:${opacity}"></div>
+        <div class="timeline-text" style="left:${left}%;width:${width}%">${escHtml(t.title)}</div>
+      </div>
+    </div>`;
+  });
+  const todayPct = pct(now);
+  html += `<div style="position:relative;height:0;margin-top:-4px">
+    <div style="position:absolute;left:${todayPct}%;top:0;width:2px;height:${tasks.length*28+12}px;background:#DD3221;z-index:2"></div>
+    <div style="position:absolute;left:${todayPct}%;top:-2px;font-size:10px;color:#DD3221;font-weight:600;transform:translateX(-50%)">▼ Heute</div>
+  </div>`;
+  html += '</div>';
+  wrap.innerHTML = html;
+
+  // --- Routinen Section ---
+  const rWrap = document.getElementById('routinesOverview');
+  if (rWrap) {
+    if (!routines.length) {
+      rWrap.innerHTML = '<div style="text-align:center;color:#aaa;padding:20px;font-size:13px">Keine Routinen angelegt</div>';
+    } else {
+      let rh = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">';
+      routines.forEach(r => {
+        const freqLabels = {'daily':'täglich','weekly':'wöchentlich','biweekly':'14-tägig','monthly':'monatlich'};
+        const done = r.done_today;
+        rh += '<div style="background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;align-items:center;gap:10px;border-left:4px solid '+(done?'#059669':'#e5e7eb')+'">'
+          + '<div style="width:28px;height:28px;border-radius:50%;background:'+(done?'#059669':'#e5e7eb')+';color:'+(done?'#fff':'#999')+';display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">'+(done?'✓':'')+'</div>'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="font-size:12px;font-weight:600;color:'+(done?'#999':'#1a1a2e')+'">'+escHtml(r.name)+'</div>'
+          + '<div style="font-size:10px;color:#888">'+escHtml(freqLabels[r.freq]||r.freq)+(r.days?' · '+r.days:'')+'</div>'
+          + '</div>'
+          + (r.last_done ? '<div style="font-size:9px;color:#999;flex-shrink:0">'+new Date(r.last_done*1000).toLocaleDateString('de-DE',{weekday:'short',day:'2-digit'})+'</div>' : '')
+          + '</div>';
+      });
+      rh += '</div>';
+      rWrap.innerHTML = '<div style="margin-top:16px"><h3 style="font-size:14px;color:#002D69;margin-bottom:8px">🔄 Tägliche Routinen</h3>'+rh+'</div>';
+    }
+  }
+}
+
+// ── Pomodoro ──
+function togglePomo() {
+  const overlay = document.getElementById('pomoOverlay');
+  overlay.classList.toggle('show');
+  if (!overlay.classList.contains('show')){
+    pomoReset();
+  }
+}
+
+function startPomoForTask(taskId) {
+  const t = allTasks.find(x => x.id === taskId);
+  if (!t) return;
+  document.getElementById('pomoTask').textContent = '🍅 ' + t.title;
+  togglePomo();
+}
+
+function pomoStart() {
+  if (pomoState === 'idle' || pomoState === 'paused' || pomoState === 'break') {
+    if (pomoState === 'idle' || pomoState === 'break') {
+      pomoRemaining = pomoState === 'break' ? 5 * 60 : 25 * 60;
+      pomoState = pomoState === 'break' ? 'break' : 'running';
+    } else {
+      pomoState = 'running';
+    }
+    document.getElementById('pomoBtn').textContent = '⏸ Pause';
+    document.getElementById('pomoPhase').textContent = pomoState === 'break' ? '☕ Pause' : '🍅 Fokus';
+    document.getElementById('pomoTimer').className = 'timer' + (pomoState === 'break' ? ' break' : '');
+    if (pomoInterval) clearInterval(pomoInterval);
+    pomoInterval = setInterval(pomoTick, 1000);
+  } else if (pomoState === 'running') {
+    pomoState = 'paused';
+    document.getElementById('pomoBtn').textContent = '▶ Weiter';
+    document.getElementById('pomoPhase').textContent = '⏸ Pausiert';
+    document.getElementById('pomoTimer').className = 'timer pause';
+    if (pomoInterval) clearInterval(pomoInterval);
+  }
+}
+
+function pomoReset() {
+  if (pomoInterval) clearInterval(pomoInterval);
+  pomoInterval = null;
+  pomoState = 'idle';
+  pomoRemaining = 25 * 60;
+  document.getElementById('pomoTimer').textContent = '25:00';
+  document.getElementById('pomoTimer').className = 'timer';
+  document.getElementById('pomoBtn').textContent = '▶ Start';
+  document.getElementById('pomoPhase').textContent = '🍅 Fokus';
+  document.getElementById('pomoTask').textContent = 'Keine Aufgabe ausgewählt';
+  updatePomoCount();
+}
+
+function pomoTick() {
+  pomoRemaining--;
+  if (pomoRemaining <= 0) {
+    if (pomoState === 'running') {
+      // Session complete
+      pomoCountToday++;
+      localStorage.setItem('pomoCount', pomoCountToday);
+      localStorage.setItem('pomoDate', today);
+      updatePomoCount();
+      if (pomoInterval) clearInterval(pomoInterval);
+      pomoState = 'break';
+      pomoRemaining = 5 * 60;
+      document.getElementById('pomoPhase').textContent = '☕ Pause — gut gemacht!';
+      document.getElementById('pomoTimer').className = 'timer break';
+      document.getElementById('pomoBtn').textContent = '▶ Pause starten';
+      try {
+        if (Notification.permission === 'granted') {
+          new Notification('🍅 Pomodoro abgeschlossen!', {body: '5 Minuten Pause.'});
+        }
+      } catch(e) {}
+      return;
+    } else if (pomoState === 'break') {
+      if (pomoInterval) clearInterval(pomoInterval);
+      pomoState = 'idle';
+      pomoRemaining = 25 * 60;
+      document.getElementById('pomoPhase').textContent = '🍅 Bereit für nächste Runde!';
+      document.getElementById('pomoTimer').textContent = '25:00';
+      document.getElementById('pomoTimer').className = 'timer';
+      document.getElementById('pomoBtn').textContent = '▶ Start';
+      try {
+        if (Notification.permission === 'granted') {
+          new Notification('☕ Pause vorbei!', {body: 'Nächster Fokus-Durchgang.'});
+        }
+      } catch(e) {}
+      return;
+    }
+  }
+  const m = Math.floor(pomoRemaining / 60);
+  const s = pomoRemaining % 60;
+  document.getElementById('pomoTimer').textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  // Update browser title
+  document.title = '🍅 ' + document.getElementById('pomoTimer').textContent + ' · Projekte';
+}
+
+function updatePomoCount() {
+  document.getElementById('pomoCount').textContent = '🍅 ' + pomoCountToday + ' Today';
+}
+
+// Request notification permission on interaction
+document.addEventListener('click', () => {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}, {once: true});
+
+// ── Project Overview ──
+function renderOverview() {
+  const wrap = document.getElementById('overviewWrap');
+  if (!allTasks.length) {
+    wrap.innerHTML = '<div class="empty-state">Keine Aufgaben vorhanden</div>';
+    return;
+  }
+  const byProj = {};
+  allTasks.forEach(t => {
+    const p = t.project_id || '(ohne Projekt)';
+    if (!byProj[p]) byProj[p] = [];
+    byProj[p].push(t);
+  });
+  const projNames = Object.keys(byProj).sort();
+  const colors = {'backlog':'#e5e7eb','ready':'#f59e0b','running':'#059669','completed':'#002D69','blocked':'#DC2626'};
+  let totalEst = 0, totalBuf = 0, totalTasks = allTasks.length;
+  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">';
+  projNames.forEach(p => {
+    const tasks = byProj[p];
+    const count = tasks.length;
+    const est = tasks.reduce((s,t) => s + (t.estimated_minutes||0), 0);
+    const buf = tasks.reduce((s,t) => s + Math.round((t.estimated_minutes||0) * (t.buffer_percent||20) / 100), 0);
+    totalEst += est; totalBuf += buf;
+    const byStatus = {};
+    tasks.forEach(t => { byStatus[t.status] = (byStatus[t.status]||0) + 1; });
+    const starts = tasks.map(t => t.started_at||t.created_at).filter(Boolean).sort();
+    const ends = tasks.map(t => t.completed_at).filter(Boolean).sort();
+    const first = starts.length ? tsToDate(starts[0]) : '—';
+    const last = ends.length ? tsToDate(ends[ends.length-1]) : 'offen';
+    const pctDone = tasks.filter(t => t.status==='completed').length / count * 100;
+    html += '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      + '<h3 style="font-size:15px;color:#002D69;font-weight:600;cursor:pointer" onclick="filterProject(\''+escHtml(p)+'\')">📁 '+escHtml(p)+'</h3>'
+      + '<span style="font-size:12px;color:#888;font-weight:500">'+count+' Aufgaben</span></div>'
+      + '<div style="height:6px;background:#e5e7eb;border-radius:3px;margin-bottom:10px;overflow:hidden">'
+      + '<div style="height:100%;width:'+Math.round(pctDone)+'%;background:#059669;border-radius:3px;transition:width .5s"></div></div>'
+      + '<table style="width:100%;font-size:12px;border-collapse:collapse">'
+      + '<tr><td style="padding:2px 4px;color:#666">⏱ Aufwand</td><td style="padding:2px 4px;font-weight:600">'+_fmtM(est)+(buf?' + '+_fmtM(buf)+' Puffer':'')+'</td></tr>'
+      + '<tr><td style="padding:2px 4px;color:#666">📅 Start</td><td style="padding:2px 4px">'+first+'</td></tr>'
+      + '<tr><td style="padding:2px 4px;color:#666">🎯 Ende</td><td style="padding:2px 4px">'+last+'</td></tr>'
+      + '<tr><td style="padding:2px 4px;color:#666">📊 Status</td><td style="padding:2px 4px">'
+      + Object.entries(byStatus).map(([s,c]) => '<span style="display:inline-block;background:'+(colors[s]||'#999')+';color:'+(s==='backlog'?'#666':'#fff')+';border-radius:4px;padding:1px 6px;font-size:10px;margin:1px">'+(COL_NAMES_SHORT[s]||s)+' '+c+'</span>').join(' ')
+      + '</td></tr></table></div>';
+  });
+  html += '</div>';
+
+  // --- Charts: Zeitverteilung ---
+  const now = new Date();
+  const dayMs = 86400000;
+  const projColors = ['#002D69','#DD3221','#f59e0b','#059669','#7C3AED','#DC2626','#6b7280','#007FA7','#84cc16','#ec4899'];
+
+  // 1) Pie: Geplante Zeit diese Woche nach Projekt
+  const weekStart = new Date(now); weekStart.setDate(now.getDate()-now.getDay()+1); weekStart.setHours(0,0,0,0);
+  const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate()+7);
+  const ws = Math.floor(weekStart.getTime()/1000);
+  const we = Math.floor(weekEnd.getTime()/1000);
+  const weekTasks = allTasks.filter(t => {
+    const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+    return s && s < we && e >= ws && (t.estimated_minutes||0) > 0;
+  });
+  const byProjWeek = {};
+  weekTasks.forEach(t => {
+    const p = t.project_id || 'Unsortiert';
+    byProjWeek[p] = (byProjWeek[p]||0) + (t.estimated_minutes||0);
+  });
+  const wpEntries = Object.entries(byProjWeek).sort((a,b) => b[1]-a[1]);
+  const wpTotal = wpEntries.reduce((s,[_,v]) => s+v, 0);
+  let pieHtml = '';
+  if (wpTotal > 0) {
+    let conic = wpEntries.map(([p,v],i) => {
+      const pct = v/wpTotal*100;
+      const angle = i===0 ? 0 : wpEntries.slice(0,i).reduce((s,[_,x]) => s + x/wpTotal*360, 0);
+      return projColors[i%projColors.length]+' '+angle+'deg '+(angle+v/wpTotal*360)+'deg';
+    }).join(', ');
+    pieHtml = '<div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap">'
+      + '<div style="width:120px;height:120px;border-radius:50%;background:conic-gradient('+conic+');flex-shrink:0"></div>'
+      + '<div style="font-size:12px">'
+      + wpEntries.map(([p,v],i) => '<div style="margin:2px 0"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+projColors[i%projColors.length]+';margin-right:6px;vertical-align:middle"></span>'+escHtml(p)+' <strong>'+_fmtM(v)+'</strong></div>').join('')
+      + '</div></div>';
+  } else {
+    pieHtml = '<div style="color:#aaa;font-size:13px;padding:10px">Keine geplanten Aufgaben diese Woche mit Datum</div>';
+  }
+
+  // 2) Bar Chart: Wöchentlicher Aufwand letzte 6 Wochen
+  let barHtml = '<div style="display:flex;align-items:end;gap:6px;height:120px;padding:10px 0">';
+  for (let w = 5; w >= 0; w--) {
+    const wStart = new Date(now); wStart.setDate(now.getDate()-now.getDay()+1 - w*7); wStart.setHours(0,0,0,0);
+    const wEnd = new Date(wStart); wEnd.setDate(wStart.getDate()+7);
+    const wst = Math.floor(wStart.getTime()/1000);
+    const wet = Math.floor(wEnd.getTime()/1000);
+    const wTasks = allTasks.filter(t => {
+      const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+      return s && s < wet && e >= wst && (t.estimated_minutes||0) > 0;
+    });
+    const wEst = wTasks.reduce((s,t) => s+(t.estimated_minutes||0), 0);
+    const maxH = 100;
+    const h = Math.min(maxH, wEst/60); // 1h = 1px roughly
+    barHtml += '<div style="flex:1;display:flex;flex-direction:column;align-items:center">'
+      + '<div style="width:100%;background:#002D69;border-radius:4px 4px 0 0;height:'+h+'px;min-height:'+(wEst>0?4:0)+'px;transition:height .3s"></div>'
+      + '<div style="font-size:9px;color:#666;margin-top:4px;text-align:center">'+wStart.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})+'</div>'
+      + '<div style="font-size:9px;color:#999">'+_fmtM(wEst)+'</div>'
+      + '</div>';
+  }
+  barHtml += '</div>';
+
+  // Charts section
+  html += '<div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+    + '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+    + '<h3 style="font-size:14px;color:#002D69;margin-bottom:12px">🥧 Geplante Zeit diese Woche</h3>'
+    + pieHtml
+    + '</div>'
+    + '<div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+    + '<h3 style="font-size:14px;color:#002D69;margin-bottom:12px">📊 Wöchentlicher Aufwand (6 Wochen)</h3>'
+    + barHtml
+    + '</div>'
+    + '</div>';
+
+  // Totals bar
+  const totalDone = allTasks.filter(t => t.status==='completed').length;
+  html += '<div style="margin-top:16px;background:#fff;border-radius:10px;padding:14px 16px;display:flex;gap:24px;flex-wrap:wrap;font-size:13px">'
+    + '<span>📊 <strong>'+totalTasks+'</strong> Aufgaben</span>'
+    + '<span>⏱ <strong>'+_fmtM(totalEst)+'</strong> geschätzt <span style="color:#888">(+ '+_fmtM(totalBuf)+' Puffer)</span></span>'
+    + '<span>✅ <strong>'+totalDone+'</strong> erledigt <span style="color:#888">('+(totalTasks?Math.round(totalDone/totalTasks*100):0)+'%)</span></span>'
+    + '</div>';
+  wrap.innerHTML = html;
+}
+function _fmtM(m) { if (!m||m<=0)return'0min'; if(m>=60)return Math.floor(m/60)+'h '+(m%60?m%60+'min':''); return m+'min'; }
+
+// ── Jump to Kanban with project filter ──
+function filterProject(name) {
+  document.getElementById('projectFilter').value = name;
+  switchTab('kanban');
+  renderKanban();
+}
+
+// ── Routinen ──
+let routines = [];
+async function toggleRoutine(id) {
+  await api('/api/routines/'+id+'/toggle', {method:'POST'});
+  await loadTasks();
+}
+
+// ── Calendar View ──
+let calOffset = 0;
+let calView = 'week';
+function calSetView(v) {
+  calView = v;
+  document.querySelectorAll('.cal-vw').forEach(b => {
+    b.style.background = b.dataset.vw === v ? '#002D69' : '#e5e7eb';
+    b.style.color = b.dataset.vw === v ? '#fff' : '#666';
+  });
+  renderCalendar();
+}
+function calNav(d) {
+  if (calView === 'month') calOffset += d;
+  else if (calView === 'year') calOffset += d;
+  else calOffset += d;
+  renderCalendar();
+}
+function calToday() { calOffset = 0; renderCalendar(); }
+
+function renderCalendar() {
+  const wrap = document.getElementById('calendarWrap');
+  if (calView === 'week') return renderCalWeek(wrap);
+  if (calView === 'day') return renderCalDay(wrap);
+  if (calView === 'month') return renderCalMonth(wrap);
+  renderCalYear(wrap);
+}
+
+function renderCalWeek(wrap) {
+  const now = new Date();
+  const day = now.getDay();
+  const diff = now.getDate() - day + (day === 0 ? -6 : 1) + calOffset * 7;
+  const start = new Date(now.setDate(diff)); start.setHours(0,0,0,0);
+  const days = Array.from({length:7}, (_,i) => { const d=new Date(start); d.setDate(d.getDate()+i); return d; });
+  const fmt = d => d.toLocaleDateString('de-DE', {weekday:'short', day:'2-digit', month:'2-digit'});
+  const isToday = d => {const t=new Date(); return d.getFullYear()===t.getFullYear()&&d.getMonth()===t.getMonth()&&d.getDate()===t.getDate();};
+  document.getElementById('calLabel').textContent = fmt(days[0]) + ' – ' + fmt(days[6]);
+  const dayTs = days.map(d => Math.floor(d.getTime()/1000));
+  const nextDayTs = days.map(d => Math.floor(new Date(d.getFullYear(),d.getMonth(),d.getDate()+1).getTime()/1000));
+  const byDay = days.map(()=>[]);
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
+  calDated.forEach(t => {
+    const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+    if (!s) return;
+    for (let i=0;i<7;i++) if (s<nextDayTs[i]&&e>=dayTs[i]) byDay[i].push(t);
+  });
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  let h = '<table style="width:100%;border-collapse:collapse;table-layout:fixed;min-width:700px"><thead><tr>';
+  days.forEach((d,i) => {
+    const t = isToday(d) ? ' style="background:#002D69;color:#fff;border-radius:6px 6px 0 0"' : '';
+    h += '<th'+t+' style="padding:8px 6px;font-size:12px;text-align:center;font-weight:600">'+fmt(d)+'</th>';
+  });
+  h += '</tr></thead><tbody><tr>';
+  days.forEach((d,i) => {
+    const t = isToday(d) ? ' style="background:#f0f4ff"' : '';
+    h += '<td'+t+' style="vertical-align:top;padding:4px;border:1px solid #e5e7eb;height:120px;width:14.28%">';
+    if (byDay[i].length) byDay[i].forEach(t => {
+      const p = PRIO_LABEL(t.priority);
+      h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:4px;padding:2px 4px;margin-bottom:2px;font-size:10px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'+(t.status==='completed'?'opacity:0.5;text-decoration:line-through':'')+'" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title)+'</div>';
+    });
+    h += '</td>';
+  });
+  h += '</tr></tbody></table>';
+  h += '<div style="margin-top:8px;font-size:11px;color:#888;display:flex;gap:12px;flex-wrap:wrap">';
+  Object.entries(colors).forEach(([p,c]) => h += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+c+';margin-right:4px;vertical-align:middle"></span>'+p+'</span>');
+  h += '</div>';
+  wrap.innerHTML = h;
+}
+
+function renderCalDay(wrap) {
+  const now = new Date();
+  now.setDate(now.getDate() + calOffset);
+  const fmt = d => d.toLocaleDateString('de-DE', {weekday:'long', day:'2-digit', month:'long', year:'numeric'});
+  document.getElementById('calLabel').textContent = fmt(now);
+  const dayStart = Math.floor(new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime()/1000);
+  const dayEnd = dayStart + 86400;
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
+  const tasks = calDated.filter(t => {
+    const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+    return s && s < dayEnd && e >= dayStart;
+  });
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const isToday = new Date().toDateString() === now.toDateString();
+  let h = '<div style="background:'+(isToday?'#f0f4ff':'#fff')+';border-radius:8px;padding:16px;min-height:400px">';
+  if (!tasks.length) {
+    h += '<div class="empty-state">Keine Aufgaben an diesem Tag</div>';
+  } else {
+    h += '<div style="display:flex;flex-direction:column;gap:6px">';
+    tasks.sort((a,b) => (a.priority||2)-(b.priority||2));
+    tasks.forEach(t => {
+      const prio = PRIO_LABEL(t.priority);
+      const done = t.status === 'completed';
+      h += '<div class="cal-day-card" data-id="'+t.id+'" style="border-left:4px solid '+(colors[prio]||'#999')+';background:'+(done?'#f9f9f9':'#fff')+';border-radius:6px;padding:10px 12px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;align-items:center;gap:10px">'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:13px;font-weight:600;color:'+(done?'#999':'#1a1a2e')+';'+(done?'text-decoration:line-through':'')+'">'+escHtml(t.title)+'</div>'
+        + '<div style="font-size:10px;color:#888;margin-top:2px;display:flex;gap:8px">'
+        + '<span style="color:'+(colors[prio]||'#999')+';font-weight:600">'+prio+'</span>'
+        + (t.project_id ? '<span>📁 '+escHtml(t.project_id)+'</span>' : '')
+        + '<span>'+(COL_NAMES[t.status]||t.status)+'</span>'
+        + (t.estimated_minutes ? '<span>🕐 '+_fmtM(t.estimated_minutes)+'</span>' : '')
+        + '</div></div>'
+        + '</div>';
+    });
+    h += '</div>';
+  }
+  h += '</div>'; // close else
+  // Routines section
+  if (routines.length) {
+    h += '<h3 style="font-size:14px;color:#002D69;margin:16px 0 8px">🔄 Routinen</h3>'
+      + '<div style="display:flex;flex-direction:column;gap:6px">';
+    routines.forEach(r => {
+      // Show routines matching today
+      const isTodayRoutine = r.freq === 'daily' || (function() {
+        const dayEn = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+        const todayEn = dayEn[new Date().getDay()];
+        if (r.freq === 'weekly' && r.days && r.days.includes(todayEn)) return true;
+        if (r.freq === 'biweekly' && r.days && r.days.includes(todayEn)) {
+          // Every other week: use even/odd week check
+          const weekNum = Math.floor((new Date() - new Date(new Date().getFullYear(),0,1)) / 604800000);
+          return weekNum % 2 === 0;
+        }
+        if (r.freq === 'monthly' && r.days) {
+          const dayNum = parseInt(r.days);
+          return new Date().getDate() === dayNum;
+        }
+        return false;
+      })();
+      if (!isTodayRoutine) return;
+      h += '<div class="cal-day-routine" data-rid="'+r.id+'" style="border-left:4px solid '+(r.done_today?'#059669':'#e5e7eb')+';background:#fff;border-radius:6px;padding:10px 12px;cursor:pointer;display:flex;align-items:center;gap:10px;box-shadow:0 1px 2px rgba(0,0,0,.06)">'
+        + '<div style="width:24px;height:24px;border-radius:50%;background:'+(r.done_today?'#059669':'#e5e7eb')+';color:'+(r.done_today?'#fff':'#999')+';display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0">'+(r.done_today?'✓':'')+'</div>'
+        + '<div style="font-size:12px;color:'+(r.done_today?'#999':'#1a1a2e')+';'+(r.done_today?'text-decoration:line-through':'')+'">'+escHtml(r.name)+'</div>'
+        + '</div>';
+    });
+    h += '</div>';
+  }
+  h += '</div>'; // close day container
+  wrap.innerHTML = h;
+  // Attach click handlers
+  wrap.querySelectorAll('.cal-day-card').forEach(el => {
+    el.addEventListener('click', function() { editTask(this.dataset.id); });
+  });
+  wrap.querySelectorAll('.cal-day-routine').forEach(el => {
+    el.addEventListener('click', function() { toggleRoutine(parseInt(this.dataset.rid)); });
+  });
+}
+
+function renderCalMonth(wrap) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + calOffset;
+  const first = new Date(year, month, 1);
+  const last = new Date(year, month + 1, 0);
+  const startDay = first.getDay(); // 0=Sun
+  const daysInMonth = last.getDate();
+  const monthLabel = first.toLocaleDateString('de-DE', {month:'long', year:'numeric'});
+  document.getElementById('calLabel').textContent = monthLabel;
+  const dayLabels = ['Mo','Di','Mi','Do','Fr','Sa','So'];
+  let h = '<table style="width:100%;border-collapse:collapse;table-layout:fixed"><thead><tr>';
+  dayLabels.forEach(d => h += '<th style="padding:6px;font-size:11px;text-align:center;color:#666">'+d+'</th>');
+  h += '</tr></thead><tbody>';
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  const calDated = calTasks.filter(t => t.started_at || t.completed_at);
+  const tNow = Math.floor(Date.now()/1000);
+  let day = 1;
+  for (let row = 0; row < 6; row++) {
+    if (day > daysInMonth) break;
+    h += '<tr>';
+    for (let col = 0; col < 7; col++) {
+      const cellDay = row === 0 && col < ((startDay+6)%7) ? 0 : day++;
+      const d = cellDay ? new Date(year, month, cellDay) : null;
+      const isT = d && d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()===now.getDate();
+      h += '<td style="vertical-align:top;padding:2px;border:1px solid #e5e7eb;height:80px;width:14.28%;'+(isT?'background:#f0f4ff':'')+'">';
+      if (d) {
+        h += '<div style="font-size:10px;font-weight:600;color:'+(isT?'#002D69':'#333')+';padding:1px 2px;margin-bottom:2px">'+cellDay+'</div>';
+        const dayStart = Math.floor(d.getTime()/1000);
+        const dayEnd = dayStart + 86400;
+        const tasks = calDated.filter(t => {
+          const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+          return s && s < dayEnd && e >= dayStart;
+        }).slice(0, 3);
+        tasks.forEach(t => {
+          const p = PRIO_LABEL(t.priority);
+          h += '<div style="background:'+(colors[p]||'#999')+';color:#fff;border-radius:2px;padding:1px 2px;margin-bottom:1px;font-size:8px;cursor:pointer;overflow:hidden;white-space:nowrap;'+(t.status==='completed'?'opacity:0.5;text-decoration:line-through':'')+'" onclick="editTask(\''+t.id+'\')">'+escHtml(t.title).substring(0,15)+'</div>';
+        });
+        if (tasks.length > 3) h += '<div style="font-size:8px;color:#999">+'+ (calDated.filter(t => {
+          const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+          return s && s < dayEnd && e >= dayStart;
+        }).length - 3) +' mehr</div>';
+      }
+      h += '</td>';
+    }
+    h += '</tr>';
+  }
+  h += '</tbody></table>';
+  wrap.innerHTML = h;
+}
+
+function renderCalYear(wrap) {
+  const now = new Date();
+  const year = now.getFullYear() + calOffset;
+  document.getElementById('calLabel').textContent = 'Jahr ' + year;
+  const colors = {'hoch':'#DD3221','mittel':'#f59e0b','niedrig':'#6b7280'};
+  const calFilter = document.getElementById('calProjectFilter').value;
+  const calTasks = calFilter ? allTasks.filter(t => (t.project_id||'') === calFilter) : allTasks;
+  let h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
+  for (let m = 0; m < 12; m++) {
+    const first = new Date(year, m, 1);
+    const lastD = new Date(year, m + 1, 0).getDate();
+    const mName = first.toLocaleDateString('de-DE', {month:'short'});
+    const monthStart = Math.floor(first.getTime()/1000);
+    const monthEnd = monthStart + lastD * 86400;
+    const tasks = calDated.filter(t => {
+      const s = t.started_at||t.created_at; const e = t.completed_at||s+86400*14;
+      return s && s < monthEnd && e >= monthStart;
+    });
+    const byPrio = {hoch:0,mittel:0,niedrig:0};
+    tasks.forEach(t => { const p=PRIO_LABEL(t.priority); byPrio[p]=(byPrio[p]||0)+1; });
+    h += '<div style="background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+      + '<div style="font-size:13px;font-weight:600;color:#002D69;margin-bottom:6px">'+mName+'</div>'
+      + '<div style="font-size:11px;color:#666">'+tasks.length+' Aufgaben</div>';
+    Object.entries(byPrio).forEach(([p,c]) => {
+      if (c) h += '<div style="font-size:10px;color:'+(colors[p]||'#999')+'">'+p+': '+c+'</div>';
+    });
+    h += '</div>';
+  }
+  h += '</div>';
+  wrap.innerHTML = h;
+}
+
+// ── Tabs ──
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  const tab = document.querySelector(`.tab[onclick*="'${name}'"]`);
+  if (tab) tab.classList.add('active');
+  const panel = document.getElementById('panel-' + name);
+  if (panel) panel.classList.add('active');
+  if (name === 'gantt') renderGantt();
+  if (name === 'overview') renderOverview();
+  if (name === 'calendar') renderCalendar();
+}
+
+// Restore title when timer done
+setInterval(() => {
+  if (pomoState === 'idle' || pomoState === 'paused') {
+    document.title = 'Projekte · Christian Radden';
+  }
+}, 5000);
+
+// ── Init ──
+loadTasks();
+</script>
+</body>
+</html>
+"""
+
+if __name__ == "__main__":
+    server = HTTPServer((HOST, PORT), KanbanHandler)
+    print(f"✅ Kanban + Gantt + Brainstorming + Pomodoro: http://{HOST}:{PORT}")
+    print(f"   Dashboard:                                 http://{HOST}:{PORT}/")
+    print(f"   API:                                       http://{HOST}:{PORT}/api/tasks")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+        print("\nServer gestoppt.")

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+data/kanban.db*
+.env
+*.db-wal
+*.db-shm
